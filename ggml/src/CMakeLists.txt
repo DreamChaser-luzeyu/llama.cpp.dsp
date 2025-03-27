@@ -224,6 +224,18 @@ function(ggml_add_backend_library backend)
         set_target_properties(${backend} PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
         target_compile_definitions(${backend} PRIVATE GGML_BACKEND_DL)
         add_dependencies(ggml ${backend})
+        # 给dspp后端链接libmt
+        if(${backend} STREQUAL "ggml-dsp")
+            message("!!!!!!!!!!!!!!!ADD LIBMT TO TARGET DSP!!!!!!!!!!!!!!!!!")
+            set(M3K_HOME /home/nk/mt3000_programming_env/)
+            set(LIBMT_HOME ${M3K_HOME}/libmt)
+            find_library(MT_LIB NAMES mt PATHS "${LIBMT_HOME}/lib/")
+            message(${MT_LIB})
+            target_link_libraries(${backend} PRIVATE 
+            -Wl,--whole-archive
+            ${MT_LIB}
+            -Wl,--no-whole-archive)
+        endif()
     else()
         add_library(${backend} ${ARGN})
         target_link_libraries(ggml PUBLIC ${backend})
@@ -310,6 +322,7 @@ ggml_add_backend(RPC)
 ggml_add_backend(SYCL)
 ggml_add_backend(Vulkan)
 ggml_add_backend(OpenCL)
+ggml_add_backend(DSP)
 
 foreach (target ggml-base ggml)
     target_include_directories(${target} PUBLIC    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include> $<INSTALL_INTERFACE:include>)
