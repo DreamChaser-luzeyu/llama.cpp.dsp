@@ -8,29 +8,13 @@
 #include <unistd.h>
 #include <unordered_map>
 
+#include "backend_debug.h"
 #include "ggml-dsp/MTUtils.hpp"
 #include "ggml.h"
 #include "ggml-dsp-funcs.h"
 #include "ggml-cpu-impl.h"
 
-#define dump_file(...) do { \
-    extern FILE * debug_file; \
-    fprintf(debug_file, __VA_ARGS__); \
-    fflush(debug_file); \
-} while(0)
 
-#define dump_mat(ptr, type, nb, m, n) do { \
-    for(size_t bb = 0; bb < (nb); bb++) { \
-        dump_file("batch %ld\n", bb); \
-        for(size_t i = 0; i < (m); i++) { \
-            for(size_t j = 0; j < (n); j++) { \
-                typedef type(*mat_arr_ptr)[nb][m][n]; \
-                dump_file("%.4f ", (*(mat_arr_ptr)(ptr))[bb][i][j]); \
-            } \
-            dump_file("\n"); \
-        } \
-    } \
-} while(0)
 
 static inline uint64_t __do_get_timestamp_ns() {
     auto now = std::chrono::high_resolution_clock::now();
@@ -96,7 +80,7 @@ static struct ggml_tensor mkcont_tensor(const struct ggml_compute_params * param
     return ts;
 }
 
-static const int test_cluster_id = 1;
+static const int test_cluster_id = TEST_CLUSTER_ID;
 
 int get_cluster_id_from_buffer(void * ptr);
 
