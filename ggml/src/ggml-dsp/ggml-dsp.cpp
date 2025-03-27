@@ -14,6 +14,12 @@
 #include <vector>
 #include <map>
 
+#include "backend_debug.h"
+
+#if NO_INIT_DEV
+#define mt_flush_all()
+#endif
+
 static ggml_backend_device ggml_backend_cpu_device;
 
 // ggml-backend interface
@@ -63,7 +69,7 @@ struct ggml_backend_cpu_context {
 };
 
 static const char * ggml_backend_dspp_get_name(ggml_backend_t backend) {
-    return "DSPP";
+    return "DSP";
 
     GGML_UNUSED(backend);
 }
@@ -345,12 +351,12 @@ static void ggml_backend_dspp_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
 
 int get_cluster_id_from_buffer(void * ptr);
 static enum ggml_status ggml_backend_dspp_buffer_init(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
-    
-    size_t size = ggml_backend_buffer_get_alloc_size(buffer, tensor);
-    void * dsp_data = dsp_malloc(size);
-    memcpy(dsp_data, tensor->data, size);
-    tensor->data = dsp_data;
-    mt_flush_all();
+    // Maybe need to cope with align issue when co-computing with CPU
+    // size_t size = ggml_backend_buffer_get_alloc_size(buffer, tensor);
+    // void * dsp_data = dsp_malloc(size);
+    // memcpy(dsp_data, tensor->data, size);
+    // tensor->data = dsp_data;
+    // mt_flush_all();
     // printf("***Init buffer with %lu bytes*** \n", size);
 
     return GGML_STATUS_SUCCESS;

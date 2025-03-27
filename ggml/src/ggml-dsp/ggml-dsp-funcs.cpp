@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <sys/types.h>
 
+#include "backend_debug.h"
+
 #include "ggml-dsp/MTUtils.hpp"
 #include "ggml.h"
 #include "ggml-cpu-impl.h"
@@ -41,8 +43,8 @@ static int nr_valid_core[NR_CLUSTER];
 static int invalid_core_bits[NR_CLUSTER];
 #define IS_BIT_LOW(val, bit_pos) (!(!!(((uint32_t)(val)) & ((uint32_t)(0x1u) << ((uint32_t)(bit_pos))))))
 
-static bool is_initialized = false;
-static const int test_cluster_id = 1;
+bool is_initialized = false;
+static const int test_cluster_id = TEST_CLUSTER_ID;
 
 static void dsp_test_and_debug() {
     printf("-------Hello debug-------\n");
@@ -62,6 +64,7 @@ static inline uint64_t __do_get_timestamp_ns() {
 }
 
 uint64_t memcpy_time_ns = 0ul;
+#if PROFILING_MEMCPY
 #define memcpy(dst, src, size) do { \
     uint64_t bt = __do_get_timestamp_ns(); \
     memcpy(dst, src, size); \
@@ -69,11 +72,13 @@ uint64_t memcpy_time_ns = 0ul;
     uint64_t et = __do_get_timestamp_ns(); \
     memcpy_time_ns += (et - bt); \
 } while(0)
+#endif
 
 FILE * debug_file;
 
 void init_dsp() {
     printf("!!!!!!!!!!!!!!!Init DSP !!!!!!!!!!!!!!!!!\n");
+    #if !NO_INIT_DEV
     // ----- 注册算子
     for (int cluster_id = 0; cluster_id < 4; cluster_id++) {
         for (int core_id = 0; core_id < 24; core_id++) {
@@ -105,13 +110,15 @@ void init_dsp() {
             }
         }
     }
-
+    #endif
 
 
     // static DSPHelper helper(&mt_dev);
     debug_file = fopen("/home/tju/luzeyu/llama_original/llama.cpp/dump.out", "w+");
 
     dsp_test_and_debug();
+
+    is_initialized = true;
 }
 
 typedef struct addr_range {
@@ -159,7 +166,7 @@ void dsp_free(void * ptr) {
         return;
     }
     // assert(false); // Not a mt_malloced pointer
-    free(ptr);
+    // free(ptr);
 }
 
 static inline void call_func_on_all_cores(int cluster_id, const multi_core_dsp_func_t & multi_core_func, unsigned long *args, int params_num, int expected_core_num = 22) {
