@@ -306,7 +306,8 @@
                 "CMAKE_BUILD_TYPE": "Debug",
                 "GGML_NATIVE": "OFF",
                 "GGML_BACKEND_DL": "ON",
-                "GGML_DSP": "ON"
+                "GGML_DSP": "ON",
+                "GGML_MATMULREF": "ON"
             }
         }
     ]

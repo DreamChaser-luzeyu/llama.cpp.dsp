@@ -43,7 +43,6 @@ static int nr_valid_core[NR_CLUSTER];
 static int invalid_core_bits[NR_CLUSTER];
 #define IS_BIT_LOW(val, bit_pos) (!(!!(((uint32_t)(val)) & ((uint32_t)(0x1u) << ((uint32_t)(bit_pos))))))
 
-bool is_initialized = false;
 static const int test_cluster_id = TEST_CLUSTER_ID;
 
 static void dsp_test_and_debug() {
@@ -75,7 +74,7 @@ uint64_t memcpy_time_ns = 0ul;
 #endif
 
 FILE * debug_file;
-
+bool is_initialized = false;
 void init_dsp() {
     printf("!!!!!!!!!!!!!!!Init DSP !!!!!!!!!!!!!!!!!\n");
     #if !NO_INIT_DEV
@@ -146,8 +145,12 @@ int get_cluster_id_from_buffer(void * ptr) {
 
 void * dsp_malloc(size_t size) {
     // check if dev initialized before allocing
+    if(!is_initialized) {
+        init_dsp();
+    }
 
     void * dsp_data = mt_malloc(test_cluster_id, size, 0ul);
+    // void * dsp_data = malloc(size);  // for test ? 
     assert(dsp_data);
     addr_range_t range = {
         .ptr = dsp_data,
@@ -159,10 +162,15 @@ void * dsp_malloc(size_t size) {
 }
 
 void dsp_free(void * ptr) {
+    if(!is_initialized) {
+        init_dsp();
+    }
+
     auto it = mtmalloc_set.find(ptr);
     if(it != mtmalloc_set.end()) {
+        mt_free(it->second.ptr, 0ul);
+        // free(it->second.ptr);
         mtmalloc_set.erase(it);
-        mt_free(ptr, 0ul);
         return;
     }
     // assert(false); // Not a mt_malloced pointer
@@ -170,6 +178,10 @@ void dsp_free(void * ptr) {
 }
 
 static inline void call_func_on_all_cores(int cluster_id, const multi_core_dsp_func_t & multi_core_func, unsigned long *args, int params_num, int expected_core_num = 22) {
+    if(!is_initialized) {
+        init_dsp();
+    }
+
     for (int i = 0; i < expected_core_num; i++) {
         MEM_BARRIER_RW;
         (*(multi_core_func[24 * cluster_id + GET_PHY_CORE_ID(cluster_id, i)])).setParamGeneric(params_num, args);
@@ -457,16 +469,21 @@ void matmul_shs_rt_dsp(
     void * dst_data_fp32,
     size_t m, size_t k, size_t n
 ) {
-    // void * bbbug = NULL;
-    // bbbug = mt_malloc(test_cluster_id, 32768, 0ul);
-    // assert(bbbug);
-
-    void * lmat_data_fp32_dsp;
-    lmat_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * k, 0x0);
-    assert(lmat_data_fp32_dsp);
-    memcpy(lmat_data_fp32_dsp, lmat_data_fp32, sizeof(float) * m * k);
     mt_flush_all();
 
+    void * lmat_data_fp32_dsp;
+    bool lmat_data_fp32_dsp_needs_free = false;
+    if(get_cluster_id_from_buffer(lmat_data_fp32) != test_cluster_id) {
+        lmat_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * k, 0x0);
+        assert(lmat_data_fp32_dsp);
+        memcpy(lmat_data_fp32_dsp, lmat_data_fp32, sizeof(float) * m * k);
+        lmat_data_fp32_dsp_needs_free = true;
+        mt_flush_all();
+    } 
+    else {
+        lmat_data_fp32_dsp = lmat_data_fp32;
+    }
+    
     // --- 将lmat量化为fp16
     void * lmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * m * k, 0x0);
     assert(lmat_data_fp16_dsp);
@@ -481,10 +498,17 @@ void matmul_shs_rt_dsp(
 
     // --- 计算矩阵乘
     void * rmat_data_fp16_dsp = NULL;
-    rmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * k * n, 0x0);
-    assert(rmat_data_fp16_dsp);
-    memcpy(rmat_data_fp16_dsp, rmat_data_fp16, sizeof(__fp16) * k * n);
-    mt_flush_all();
+    bool rmat_data_fp16_dsp_needs_free = false;
+    if(get_cluster_id_from_buffer(rmat_data_fp16) != test_cluster_id) {
+        rmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * k * n, 0x0);
+        assert(rmat_data_fp16_dsp);
+        memcpy(rmat_data_fp16_dsp, rmat_data_fp16, sizeof(__fp16) * k * n);
+        mt_flush_all();
+        rmat_data_fp16_dsp_needs_free = true;
+    }
+    else {
+        rmat_data_fp16_dsp = rmat_data_fp16;
+    }
     
     void * dst_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * m * n, 0x0);
     assert(dst_data_fp16_dsp);
@@ -524,13 +548,12 @@ void matmul_shs_rt_dsp(
     
     memcpy(dst_data_fp32, dst_data_fp32_dsp, sizeof(float) * (m * n));
 
-    mt_free(lmat_data_fp32_dsp, 0ul);
+    if(lmat_data_fp32_dsp_needs_free) { mt_free(lmat_data_fp32_dsp, 0ul); }
     mt_free(lmat_data_fp16_dsp, 0ul);
-    mt_free(rmat_data_fp16_dsp, 0ul);
+    if(rmat_data_fp16_dsp_needs_free) { mt_free(rmat_data_fp16_dsp, 0ul); }
     mt_free(dst_data_fp16_dsp, 0ul);
     mt_free(dst_data_fp32_dsp, 0ul);
     mt_free(tmp_data_fp16_dsp, 0x0ul);
-    // mt_free(bbbug, 0ul);
     mt_flush_all();
 }
 
@@ -629,11 +652,6 @@ void bmm_fp16_rtranspose_dsp(
     size_t nr_batches,
     size_t m, size_t k, size_t n
 ) {
-    // if(!is_initialized) { 
-    //     init_dsp(); 
-    //     is_initialized = true;
-    // }
-
     void * lmat_data_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * nr_batches * m * k, 0x0ul);
     void * rmat_data_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * nr_batches * k * n, 0x0ul);
     void * dst_data_dsp  = mt_malloc(test_cluster_id, sizeof(__fp16) * nr_batches * m * n, 0x0ul);
