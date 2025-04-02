@@ -84,14 +84,13 @@ int main(int argc, char ** argv) {
     model_params.n_gpu_layers = ngl;
     // --- MY_MODIFY begins
     // 禁止计算图split
-    model_params.split_mode = LLAMA_SPLIT_MODE_NONE; 
-    
-    ggml_backend_dev_t devs[2] = {
-        NULL, NULL
-    };
-    // 强制只使用DSP设备
-    devs[0] = ggml_backend_dev_get(1);
-    model_params.devices = devs;
+    // model_params.split_mode = LLAMA_SPLIT_MODE_NONE; 
+    // ggml_backend_dev_t devs[2] = {
+    //     NULL, NULL
+    // };
+    // // 强制只使用DSP设备
+    // devs[0] = ggml_backend_dev_get(2);
+    // model_params.devices = devs;
     // --- MY_MODIFY ends
 
     llama_model * model = llama_model_load_from_file(model_path.c_str(), model_params);

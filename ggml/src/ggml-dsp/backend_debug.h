@@ -1,6 +1,6 @@
 #pragma once
 
-#define NO_INIT_DEV      1
+#define NO_INIT_DEV      0
 #define PROFILING_MEMCPY 1
 #define TEST_CLUSTER_ID  1
 

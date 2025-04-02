@@ -8,6 +8,7 @@
 #include "ggml-dsp-funcs.h"
 #include "ggml.h"
 
+#include <cassert>
 #include <cctype>
 #include <cstdint>
 #include <string>
@@ -20,37 +21,15 @@
 #define mt_flush_all()
 #endif
 
-static ggml_backend_device ggml_backend_cpu_device;
+static ggml_backend_device ggml_backend_dsp_device;
 
-// ggml-backend interface
+ggml_backend_buffer_type_t ggml_backend_dspp_buffer_type(void);
+extern "C" void ggml_dsp_init(void);
 
-std::vector<ggml_backend_buffer_type_t>& ggml_backend_cpu_get_extra_buffers_type() {
-    static std::vector<ggml_backend_buffer_type_t> bufts = []() {
-        std::vector<ggml_backend_buffer_type_t> bufts;
-
-#ifdef GGML_USE_CPU_AARCH64
-        if (ggml_backend_cpu_aarch64_buffer_type()) {
-            bufts.push_back(ggml_backend_cpu_aarch64_buffer_type());
-        }
-#endif
-
-        bufts.push_back(NULL);
-
-        return bufts;
-    }();
-
-    return bufts;
-}
-
-static ggml_backend_buffer_type_t * ggml_backend_cpu_device_get_extra_buffers_type(ggml_backend_dev_t device) {
-    return ggml_backend_cpu_get_extra_buffers_type().data();
-
-    GGML_UNUSED(device);
-}
-
-static bool ggml_backend_cpu_is_extra_buffer_type(ggml_backend_buffer_type_t buft) {
-    for (auto extra : ggml_backend_cpu_get_extra_buffers_type()) {
-        if (extra && extra == buft) return true;
+static bool is_dsp_buffer(ggml_backend_buffer_t buffer) {
+    if(!buffer) { return false; }
+    if(strcmp(ggml_backend_buffer_name(buffer), "MT_MALLOC") == 0) {
+        return true;
     }
     return false;
 }
@@ -189,14 +168,14 @@ ggml_backend_t ggml_backend_dspp_init(void) {
     ctx->abort_callback_data = NULL;
 
     ggml_backend_reg_t ggml_backend_dspp_reg(void);
-    ggml_backend_t cpu_backend = new ggml_backend {
+    ggml_backend_t dsp_backend = new ggml_backend {
         /* .guid      = */ ggml_backend_dspp_guid(),
         /* .interface = */ ggml_backend_dspp_i,
         /* .device    = */ ggml_backend_reg_dev_get(ggml_backend_dspp_reg(), 0),
         /* .context   = */ ctx,
     };
 
-    if (cpu_backend == NULL) {
+    if (dsp_backend == NULL) {
         delete ctx;
         return NULL;
     }
@@ -204,51 +183,24 @@ ggml_backend_t ggml_backend_dspp_init(void) {
     void init_dsp();
     init_dsp();
 
-    return cpu_backend;
+    return dsp_backend;
 }
 
 bool ggml_backend_is_cpu(ggml_backend_t backend) {
     return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_dspp_guid());
 }
 
-void ggml_backend_cpu_set_n_threads(ggml_backend_t backend_cpu, int n_threads) {
-    GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
-
-    struct ggml_backend_cpu_context * ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
-    ctx->n_threads = n_threads;
-}
-
-void ggml_backend_cpu_set_threadpool(ggml_backend_t backend_cpu, ggml_threadpool_t threadpool) {
-    GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
-
-    struct ggml_backend_cpu_context * ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
-
-    if (ctx->threadpool && ctx->threadpool != threadpool) {
-        // already had a different threadpool, pause/suspend it before switching
-        ggml_threadpool_pause(ctx->threadpool);
-    }
-    ctx->threadpool = threadpool;
-}
-
-void ggml_backend_cpu_set_abort_callback(ggml_backend_t backend_cpu, ggml_abort_callback abort_callback, void * abort_callback_data) {
-    GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
-
-    struct ggml_backend_cpu_context * ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
-    ctx->abort_callback = abort_callback;
-    ctx->abort_callback_data = abort_callback_data;
-}
-
 // CPU backend - device
 
 struct ggml_backend_cpu_device_context {
-    std::string description = "DSPP";
+    std::string description = "DSP";
 
     ggml_backend_cpu_device_context() {
     }
 };
 
 static const char * ggml_backend_dspp_device_get_name(ggml_backend_dev_t dev) {
-    return "DSPP";
+    return "DSP";
 
     GGML_UNUSED(dev);
 }
@@ -268,7 +220,8 @@ static void ggml_backend_dspp_device_get_memory(ggml_backend_dev_t dev, size_t *
 }
 
 static enum ggml_backend_dev_type ggml_backend_dspp_device_get_type(ggml_backend_dev_t dev) {
-    return GGML_BACKEND_DEVICE_TYPE_CPU;
+    return GGML_BACKEND_DEVICE_TYPE_GPU;
+    // return GGML_BACKEND_DEVICE_TYPE_CPU;
     // return GGML_BACKEND_DEVICE_TYPE_ACCEL;
 
     GGML_UNUSED(dev);
@@ -295,13 +248,15 @@ static ggml_backend_t ggml_backend_dspp_device_init_backend(ggml_backend_dev_t d
 }
 
 static void ggml_backend_dspp_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+    // assert(false);
     // if(buffer->size == 4620288 || buffer->size == 6586368) {
-    //     ggml_aligned_free(buffer->context, buffer->size);
+        // ggml_aligned_free(buffer->context, buffer->size);
     // }
     // else {
         dsp_free(buffer->context); 
     // }
     // dsp_free(buffer->context);
+    // delete buffer;
 }
 
 static void * ggml_backend_dspp_buffer_get_base(ggml_backend_buffer_t buffer) {
@@ -322,6 +277,19 @@ static void ggml_backend_dspp_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 }
 
 static void ggml_backend_dspp_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    assert(is_dsp_buffer(buffer));
+
+    // --- check if tensor->data in tensor->buffer
+    size_t buffer_size = tensor->buffer->size;
+    void * buffer_base = tensor->buffer->context;
+    assert(
+        (buffer_base <= tensor->data) &&
+        ((uint8_t*)(tensor->data) + offset < ((uint8_t*)buffer_base) + buffer_size) &&
+        ((uint8_t*)(tensor->data) + offset + size <= ((uint8_t*)buffer_base) + buffer_size)
+    );
+
+    // tensor->data = buffer->context; 
+    // assert(tensor->data == buffer->context);
     memcpy((char *)tensor->data + offset, data, size);
     mt_flush_all();
     GGML_UNUSED(buffer);
@@ -334,6 +302,8 @@ static void ggml_backend_dspp_buffer_get_tensor(ggml_backend_buffer_t buffer, co
 }
 
 static bool ggml_backend_dspp_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * src, struct ggml_tensor * dst) {
+    assert(false); // for debug
+
     if (ggml_backend_buffer_is_host(src->buffer)) {
         memcpy(dst->data, src->data, ggml_nbytes(src));
         mt_flush_all();
@@ -348,24 +318,11 @@ static void ggml_backend_dspp_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
     memset(buffer->context, value, buffer->size);
     mt_flush_all();
 }
-
-int get_cluster_id_from_buffer(void * ptr);
-static enum ggml_status ggml_backend_dspp_buffer_init(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
-    // Maybe need to cope with align issue when co-computing with CPU
-    // size_t size = ggml_backend_buffer_get_alloc_size(buffer, tensor);
-    // void * dsp_data = dsp_malloc(size);
-    // memcpy(dsp_data, tensor->data, size);
-    // tensor->data = dsp_data;
-    // mt_flush_all();
-    // printf("***Init buffer with %lu bytes*** \n", size);
-
-    return GGML_STATUS_SUCCESS;
-}
-
+static enum ggml_status ggml_backend_dsp_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor);
 static const struct ggml_backend_buffer_i ggml_backend_dspp_buffer_i = {
     /* .free_buffer     = */ ggml_backend_dspp_buffer_free_buffer,
     /* .get_base        = */ ggml_backend_dspp_buffer_get_base,
-    /* .init_tensor     = */ ggml_backend_dspp_buffer_init, // no initialization required
+    /* .init_tensor     = */ ggml_backend_dsp_buffer_init_tensor,
     /* .memset_tensor   = */ ggml_backend_dspp_buffer_memset_tensor,
     /* .set_tensor      = */ ggml_backend_dspp_buffer_set_tensor,
     /* .get_tensor      = */ ggml_backend_dspp_buffer_get_tensor,
@@ -373,6 +330,48 @@ static const struct ggml_backend_buffer_i ggml_backend_dspp_buffer_i = {
     /* .clear           = */ ggml_backend_dspp_buffer_clear,
     /* .reset           = */ NULL,
 };
+
+
+
+int get_cluster_id_from_buffer(void * ptr);
+static enum ggml_status ggml_backend_dsp_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
+    // size_t size = ggml_backend_buffer_get_alloc_size(buffer, tensor);
+    // assert(size >= ggml_type_size(tensor->type) * tensor->ne[0] * tensor->ne[1] * tensor->ne[2] * tensor->ne[3]);
+    // void * dsp_data = dsp_malloc(size);
+    // assert(dsp_data);
+    // // assert((((uint64_t)dsp_data) & 0xffful) == 0ul);
+    // // memcpy(dsp_data, tensor->data, size);
+    // // tensor->data = dsp_data;
+    // // mt_flush_all();
+    // // printf("***Init buffer with %lu bytes*** \n", size);
+
+    // ggml_backend_buffer_t dsp_buffer = ggml_backend_buffer_init(
+    //     ggml_backend_dspp_buffer_type(), 
+    //     ggml_backend_dspp_buffer_i,
+    //     dsp_data, 
+    //     size
+    // );
+
+    // tensor->buffer = dsp_buffer;
+
+    if(is_dsp_buffer(buffer)) {
+        // do nothing 
+        size_t buffer_size = tensor->buffer->size;
+        void * buffer_base = tensor->buffer->context;
+        assert(
+            (buffer_base <= tensor->data) &&
+            (tensor->data < ((uint8_t*)buffer_base) + buffer_size)
+        );
+        assert(tensor->buffer == buffer);
+    } 
+    else {
+        assert(false);
+    }
+
+    return GGML_STATUS_SUCCESS;
+}
+
+
 
 static const char * ggml_backend_dspp_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
     return "MT_MALLOC";
@@ -385,10 +384,10 @@ static ggml_backend_buffer_t ggml_backend_dspp_buffer_type_alloc_buffer(ggml_bac
     // FIXME: workaround
     void * data;
     // if(size == 4620288 || size == 6586368) {
-        data = ggml_aligned_malloc(size);
+        // data = ggml_aligned_malloc(size);
     // } 
     // else {
-    //     data = dsp_malloc(size);
+    data = dsp_malloc(size);
     // }
     
     // void * data = dsp_malloc(size);
@@ -423,7 +422,7 @@ ggml_backend_buffer_type_t ggml_backend_dspp_buffer_type(void) {
             /* .get_alloc_size   = */ NULL, // defaults to ggml_nbytes
             /* .is_host          = */ ggml_backend_dspp_buffer_type_is_host,
         },
-        /* .device  = */ &ggml_backend_cpu_device, // FIXED!
+        /* .device  = */ &ggml_backend_dsp_device, // FIXED!
         /* .context = */ NULL,
     };
 
@@ -431,7 +430,6 @@ ggml_backend_buffer_type_t ggml_backend_dspp_buffer_type(void) {
 }
 
 static ggml_backend_buffer_type_t ggml_backend_dspp_device_get_buffer_type(ggml_backend_dev_t dev) {
-    // return ggml_backend_cpu_buffer_type();
     return ggml_backend_dspp_buffer_type();
 
     GGML_UNUSED(dev);
@@ -443,20 +441,19 @@ static ggml_backend_buffer_t ggml_backend_dspp_device_buffer_from_host_ptr(ggml_
 
     // void * dsp_data;
     // dsp_data = dsp_malloc(size);
-    // dsp_data = malloc(size); // for test
     // assert(dsp_data);
 
     // memcpy(dsp_data, ptr, size);
     // mt_flush_all();
-    void * host_data;
-    host_data = ptr;
 
-    return ggml_backend_buffer_init(
-        ggml_backend_dspp_buffer_type(), 
-        ggml_backend_dspp_buffer_i,
-        host_data, 
-        size
-    );
+    // return ggml_backend_buffer_init(
+    //     ggml_backend_dspp_buffer_type(), 
+    //     ggml_backend_dspp_buffer_i,
+    //     dsp_data, 
+    //     size
+    // );
+    // return cpu buft in order to use mmap
+    return ggml_backend_cpu_buffer_from_ptr(ptr, size);
 }
 
 static bool ggml_backend_dspp_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
@@ -471,16 +468,6 @@ static bool ggml_backend_dspp_device_supports_op(ggml_backend_dev_t dev, const s
         || op->op == GGML_OP_TRANSPOSE
     ) {
         return true;
-    }
-
-    // extra_buffer_op?
-    for (auto extra : ggml_backend_cpu_get_extra_buffers_type()) {
-        if (extra) {
-            auto buf_extra = (ggml::cpu::extra_buffer_type*) extra->context;
-            if (buf_extra && buf_extra->supports_op(dev, op)) {
-                return true;
-            }
-        }
     }
 
     // the other case need host buffer.
@@ -523,7 +510,7 @@ static bool ggml_backend_dspp_device_supports_op(ggml_backend_dev_t dev, const s
 }
 
 static bool ggml_backend_dspp_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
-    return ggml_backend_buft_is_host(buft) || ggml_backend_cpu_is_extra_buffer_type(buft);
+    return ggml_backend_buft_is_host(buft); // || ggml_backend_cpu_is_extra_buffer_type(buft);
     GGML_UNUSED(dev);
 }
 
@@ -548,7 +535,7 @@ static const struct ggml_backend_device_i ggml_backend_dspp_device_i = {
 // CPU backend - backend (reg)
 
 static const char * ggml_backend_dspp_reg_get_name(ggml_backend_reg_t reg) {
-    return "DSPP";
+    return "DSP-reg";
 
     GGML_UNUSED(reg);
 }
@@ -564,158 +551,16 @@ static ggml_backend_dev_t ggml_backend_dspp_reg_get_device(ggml_backend_reg_t re
     GGML_ASSERT(index == 0);
 
     static ggml_backend_cpu_device_context ctx;
-    ggml_backend_cpu_device = {
+    ggml_backend_dsp_device = {
         /* .iface   = */ ggml_backend_dspp_device_i,
         /* .reg     = */ reg,
         /* .context = */ &ctx,
     };
 
-    return &ggml_backend_cpu_device;
-}
-
-extern "C" void ggml_dsp_init(void);
-// This is intended to replace the the ggml_cpu_has_* functions when loading the CPU backend dynamically,
-// and additionally to allow other backends to expose their own list of features that applications can query using the same API
-static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t reg) {
-    static std::vector<ggml_backend_feature> features = []() {
-        ggml_dsp_init();
-
-        std::vector<ggml_backend_feature> features;
-        if (ggml_cpu_has_sse3()) {
-            features.push_back({ "SSE3", "1" });
-        }
-        if (ggml_cpu_has_ssse3()) {
-            features.push_back({ "SSSE3", "1" });
-        }
-        if (ggml_cpu_has_avx()) {
-            features.push_back({ "AVX", "1" });
-        }
-        if (ggml_cpu_has_avx_vnni()) {
-            features.push_back({ "AVX_VNNI", "1" });
-        }
-        if (ggml_cpu_has_avx2()) {
-            features.push_back({ "AVX2", "1" });
-        }
-        if (ggml_cpu_has_f16c()) {
-            features.push_back({ "F16C", "1" });
-        }
-        if (ggml_cpu_has_fma()) {
-            features.push_back({ "FMA", "1" });
-        }
-        if (ggml_cpu_has_avx512()) {
-            features.push_back({ "AVX512", "1" });
-        }
-        if (ggml_cpu_has_avx512_vbmi()) {
-            features.push_back({ "AVX512_VBMI", "1" });
-        }
-        if (ggml_cpu_has_avx512_vnni()) {
-            features.push_back({ "AVX512_VNNI", "1" });
-        }
-        if (ggml_cpu_has_avx512_bf16()) {
-            features.push_back({ "AVX512_BF16", "1" });
-        }
-        if (ggml_cpu_has_amx_int8()) {
-            features.push_back({ "AMX_INT8", "1" });
-        }
-        if (ggml_cpu_has_neon()) {
-            features.push_back({ "NEON", "1" });
-        }
-        if (ggml_cpu_has_arm_fma()) {
-            features.push_back({ "ARM_FMA", "1" });
-        }
-        if (ggml_cpu_has_fp16_va()) {
-            features.push_back({ "FP16_VA", "1" });
-        }
-        if (ggml_cpu_has_matmul_int8()) {
-            features.push_back({ "MATMUL_INT8", "1" });
-        }
-        if (ggml_cpu_has_sve()) {
-            features.push_back({ "SVE", "1" });
-        }
-        if (ggml_cpu_has_dotprod()) {
-            features.push_back({ "DOTPROD", "1" });
-        }
-        if (ggml_cpu_get_sve_cnt() > 0) {
-            static std::string sve_cnt = std::to_string(ggml_cpu_get_sve_cnt());
-            features.push_back({ "SVE_CNT", sve_cnt.c_str() });
-        }
-        if (ggml_cpu_has_sme()) {
-            features.push_back({ "SME", "1" });
-        }
-        if (ggml_cpu_has_riscv_v()) {
-            features.push_back({ "RISCV_V", "1" });
-        }
-        if (ggml_cpu_has_vsx()) {
-            features.push_back({ "VSX", "1" });
-        }
-        if (ggml_cpu_has_vxe()) {
-            features.push_back({ "VXE", "1" });
-        }
-        if (ggml_cpu_has_wasm_simd()) {
-            features.push_back({ "WASM_SIMD", "1" });
-        }
-        if (ggml_cpu_has_llamafile()) {
-            features.push_back({ "LLAMAFILE", "1" });
-        }
-    #ifdef GGML_USE_ACCELERATE
-        features.push_back({ "ACCELERATE", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_HBM
-        features.push_back({ "CPU_HBM", "1" });
-    #endif
-    #ifdef GGML_USE_OPENMP
-        features.push_back({ "OPENMP", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_KLEIDIAI
-        features.push_back({ "KLEIDIAI", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_AARCH64
-        features.push_back({ "AARCH64_REPACK", "1" });
-    #endif
-
-        features.push_back({ nullptr, nullptr });
-
-        return features;
-    }();
-
-    return features.data();
-
-    GGML_UNUSED(reg);
+    return &ggml_backend_dsp_device;
 }
 
 static void * ggml_backend_dspp_get_proc_address(ggml_backend_reg_t reg, const char * name) {
-    if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
-        ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
-        return (void *)fct;
-    }
-    if (strcmp(name, "ggml_backend_dev_get_extra_bufts") == 0) {
-        ggml_backend_dev_get_extra_bufts_t fct = ggml_backend_cpu_device_get_extra_buffers_type;
-        return (void *)fct;
-    }
-    if (strcmp(name, "ggml_backend_get_features") == 0) {
-        return (void *)ggml_backend_cpu_get_features;
-    }
-    if (strcmp(name, "ggml_backend_set_abort_callback") == 0) {
-        return (void *)ggml_backend_cpu_set_abort_callback;
-    }
-    if (strcmp(name, "ggml_backend_cpu_numa_init") == 0) {
-        return (void *)ggml_numa_init;
-    }
-    if (strcmp(name, "ggml_backend_cpu_is_numa") == 0) {
-        return (void *)ggml_is_numa;
-    }
-
-    // threadpool - TODO:  move to ggml-base
-    if (strcmp(name, "ggml_threadpool_new") == 0) {
-        return (void *)ggml_threadpool_new;
-    }
-    if (strcmp(name, "ggml_threadpool_free") == 0) {
-        return (void *)ggml_threadpool_free;
-    }
-    if (strcmp(name, "ggml_backend_cpu_set_threadpool") == 0) {
-        return (void *)ggml_backend_cpu_set_threadpool;
-    }
-
     return NULL;
 
     GGML_UNUSED(reg);
@@ -728,7 +573,7 @@ static const struct ggml_backend_reg_i ggml_backend_dspp_reg_i = {
     /* .get_proc_address = */ ggml_backend_dspp_get_proc_address,
 };
 
-extern "C" void ggml_dsp_init(void);
+
 ggml_backend_reg_t ggml_backend_dspp_reg(void) {
     // init CPU feature detection
     ggml_dsp_init();

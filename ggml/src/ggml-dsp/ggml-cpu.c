@@ -8707,7 +8707,7 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
-static void ggml_compute_forward_mul_mat(
+void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
 
@@ -9672,7 +9672,7 @@ static void ggml_compute_forward_set(
 
 // ggml_compute_forward_cpy
 
-static void ggml_compute_forward_cpy(
+void ggml_compute_forward_cpy(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
     ggml_compute_forward_dup(params, dst);
@@ -14423,7 +14423,12 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_MUL_MAT:
             {
-                ggml_compute_forward_mul_mat(params, tensor);
+                // ggml_compute_forward_mul_mat(params, tensor);
+                void ggml_compute_forward_mul_mat_dsp(
+                    const struct ggml_compute_params * params,
+                    struct ggml_tensor * dst
+                );
+                ggml_compute_forward_mul_mat_dsp(params, tensor);
             } break;
         case GGML_OP_MUL_MAT_ID:
             {

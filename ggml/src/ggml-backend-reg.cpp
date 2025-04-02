@@ -581,6 +581,7 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     ggml_backend_load_best("musa", silent, dir_path);
     ggml_backend_load_best("cpu", silent, dir_path);
     ggml_backend_load_best("dsp", silent, dir_path);
+    // ggml_backend_load_best("matmulref", silent, dir_path);
     // check the environment variable GGML_BACKEND_PATH to load an out-of-tree backend
     const char * backend_path = std::getenv("GGML_BACKEND_PATH");
     if (backend_path) {
