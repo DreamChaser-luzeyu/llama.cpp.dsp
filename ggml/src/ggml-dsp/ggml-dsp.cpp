@@ -12,10 +12,13 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <sys/mman.h>
 #include <vector>
 #include <map>
+#include <sys/mman.h>
 
 #include "backend_debug.h"
+#include "dsp_multicluster_buffer.h"
 
 #if NO_INIT_DEV
 #define mt_flush_all()
@@ -276,9 +279,12 @@ static void ggml_backend_dspp_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     GGML_UNUSED(buffer);
 }
 
+std::unordered_map<void *, dsp_multi_cluster_desc_t *> data2desc_map;
+
 static void ggml_backend_dspp_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     assert(is_dsp_buffer(buffer));
-
+    assert(tensor->data == buffer->context);
+    // ----- mono-cluster approach, memcpy to tensor->data
     // --- check if tensor->data in tensor->buffer
     size_t buffer_size = tensor->buffer->size;
     void * buffer_base = tensor->buffer->context;
@@ -287,11 +293,25 @@ static void ggml_backend_dspp_buffer_set_tensor(ggml_backend_buffer_t buffer, st
         ((uint8_t*)(tensor->data) + offset < ((uint8_t*)buffer_base) + buffer_size) &&
         ((uint8_t*)(tensor->data) + offset + size <= ((uint8_t*)buffer_base) + buffer_size)
     );
-
-    // tensor->data = buffer->context; 
-    // assert(tensor->data == buffer->context);
+    // --- do the memcpy
     memcpy((char *)tensor->data + offset, data, size);
+
+    // ----- multi-cluster approach
+    // --- find multi cluster data desc struct
+    // auto it = data2desc_map.find(tensor->buffer->context);
+    // if(it == data2desc_map.end()) {
+    //     assert(false); // invalid buffer->context, should not happen
+    // }
+    // dsp_multi_cluster_desc_t * desc = it->second;
+
+    // --- do the memcpy
+    // assert(offset == 0); // for debug
+    // memcpy((char *)tensor->data + offset, data, size);
+
     mt_flush_all();
+
+    // desc->data_ready = true;
+
     GGML_UNUSED(buffer);
 }
 
@@ -335,38 +355,61 @@ static const struct ggml_backend_buffer_i ggml_backend_dspp_buffer_i = {
 
 int get_cluster_id_from_buffer(void * ptr);
 static enum ggml_status ggml_backend_dsp_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
+    // do nothing, make sure tensor->data inside dsp buffer
+    assert(is_dsp_buffer(buffer));
+    // assert(tensor->data == buffer->context);  // 多个tensor共用一个buffer???
+    size_t buffer_size = tensor->buffer->size;
+    void * buffer_base = tensor->buffer->context;
+    assert(
+        (buffer_base <= tensor->data) &&
+        (tensor->data < ((uint8_t*)buffer_base) + buffer_size)
+    );
+    assert(tensor->buffer == buffer);
+    
     // size_t size = ggml_backend_buffer_get_alloc_size(buffer, tensor);
-    // assert(size >= ggml_type_size(tensor->type) * tensor->ne[0] * tensor->ne[1] * tensor->ne[2] * tensor->ne[3]);
-    // void * dsp_data = dsp_malloc(size);
-    // assert(dsp_data);
-    // // assert((((uint64_t)dsp_data) & 0xffful) == 0ul);
-    // // memcpy(dsp_data, tensor->data, size);
-    // // tensor->data = dsp_data;
-    // // mt_flush_all();
-    // // printf("***Init buffer with %lu bytes*** \n", size);
-
-    // ggml_backend_buffer_t dsp_buffer = ggml_backend_buffer_init(
-    //     ggml_backend_dspp_buffer_type(), 
-    //     ggml_backend_dspp_buffer_i,
-    //     dsp_data, 
-    //     size
-    // );
-
-    // tensor->buffer = dsp_buffer;
-
-    if(is_dsp_buffer(buffer)) {
-        // do nothing 
-        size_t buffer_size = tensor->buffer->size;
-        void * buffer_base = tensor->buffer->context;
-        assert(
-            (buffer_base <= tensor->data) &&
-            (tensor->data < ((uint8_t*)buffer_base) + buffer_size)
-        );
-        assert(tensor->buffer == buffer);
-    } 
-    else {
-        assert(false);
-    }
+    // // --- find multi cluster data desc struct
+    // auto it = data2desc_map.find(tensor->buffer->context);
+    // if(it == data2desc_map.end()) {
+    //     assert(false); // invalid buffer->context, should not happen
+    // }
+    // dsp_multi_cluster_desc_t * desc = it->second;
+    // if(desc->data_ready) { 
+    //     assert(false); // more than 1 tensors sharing one buffer is not allowed
+    // }
+    // // --- calc page num for clusters
+    // size_t nr_pages = ALIGN_UPBOUND(PAGE_SIZE, size) / PAGE_SIZE;
+    // size_t nr_pages_per_cluster = (nr_pages + 3) / 4;  // divide upbound
+    // int64_t nr_pages_left = nr_pages;
+    // size_t nr_pages_c0 = nr_pages_per_cluster; 
+    // nr_pages_left -= nr_pages_c0;
+    // size_t nr_pages_c1 = nr_pages_left > (int64_t)nr_pages_per_cluster ? nr_pages_per_cluster : nr_pages_left;
+    // nr_pages_left -= nr_pages_c1;
+    // size_t nr_pages_c2 = nr_pages_left > (int64_t)nr_pages_per_cluster ? nr_pages_per_cluster : nr_pages_left;
+    // nr_pages_left -= nr_pages_c2;
+    // size_t nr_pages_c3 = nr_pages_left > (int64_t)nr_pages_per_cluster ? nr_pages_per_cluster : nr_pages_left;
+    // nr_pages_left -= nr_pages_c3;
+    // assert(nr_pages_left == 0);
+    // // --- set data for per cluster
+    // void * fix_addr = tensor->buffer->context;
+    // assert((uint64_t)fix_addr != 0x1000);  // 0x1000 reserved for magic number
+    // munmap(tensor->buffer->context, ALIGN_UPBOUND(PAGE_SIZE, size)); // make sure addr hint works
+    // void * c0_data = mt_malloc(0, nr_pages_c0 * PAGE_SIZE, (unsigned long)fix_addr);
+    // assert(c0_data == fix_addr);
+    // desc->cluster_0_data = c0_data;
+    // fix_addr = (uint8_t*)c0_data + nr_pages_c0 * PAGE_SIZE;
+    // void * c1_data = mt_malloc(1, nr_pages_c1 * PAGE_SIZE, (unsigned long)fix_addr);
+    // assert(c1_data == fix_addr);
+    // desc->cluster_1_data = c1_data;
+    // fix_addr = (uint8_t*)c1_data + nr_pages_c1 * PAGE_SIZE;
+    // void * c2_data = mt_malloc(2, nr_pages_c2 * PAGE_SIZE, (unsigned long)fix_addr);
+    // assert(c2_data == fix_addr);
+    // desc->cluster_2_data = c2_data;
+    // fix_addr = (uint8_t*)c2_data + nr_pages_c2 * PAGE_SIZE;
+    // void * c3_data = mt_malloc(3, nr_pages_c3 * PAGE_SIZE, (unsigned long)fix_addr);
+    // assert(c3_data == fix_addr);
+    // desc->cluster_3_data = c3_data;
+    
+    // desc->alloc_ready = true;
 
     return GGML_STATUS_SUCCESS;
 }
@@ -380,22 +423,37 @@ static const char * ggml_backend_dspp_buffer_type_get_name(ggml_backend_buffer_t
 }
 
 static ggml_backend_buffer_t ggml_backend_dspp_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
-    // 4620288 6586368
-    // FIXME: workaround
-    void * data;
-    // if(size == 4620288 || size == 6586368) {
-        // data = ggml_aligned_malloc(size);
-    // } 
-    // else {
+    // ----- for mono-cluster, use dsp_malloc and set as buffer context
+    void * data = NULL;
     data = dsp_malloc(size);
-    // }
-    
-    // void * data = dsp_malloc(size);
-
     if (data == NULL) {
         GGML_LOG_ERROR("%s: failed to allocate buffer of size %zu\n", __func__, size);
         return NULL;
-    }
+    } 
+
+    // // ----- for multi-cluster, we need to alloc a descriptor
+    // // --- alloc data descriptor
+    // void * multi_cluster_desc_data = malloc(sizeof(dsp_multi_cluster_desc_t));
+    // memset(multi_cluster_desc_data, 0, sizeof(dsp_multi_cluster_desc_t));
+    // // to be filled in set_tensor function
+    // // --- 预留一段虚拟地址
+    // // let size align to 4k
+    // size = ALIGN_UPBOUND(PAGE_SIZE, size);
+    // assert(size % PAGE_SIZE == 0);
+    // // preserve the addr region
+    // void * data = mmap(
+    //     NULL, 
+    //     size, 
+    //     // PROT_READ | PROT_WRITE, 
+    //     PROT_NONE,
+    //     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, 
+    //     -1, 
+    //     0
+    // );
+    // assert(data); // assert not null
+    // assert(((uint64_t)data & 0xffful) == 0ul); // assert 4k aligned
+    // // --- put into map in order to find desc from buffer->context
+    // data2desc_map[data] = (dsp_multi_cluster_desc_t*)multi_cluster_desc_data;
 
     return ggml_backend_buffer_init(buft, ggml_backend_dspp_buffer_i, data, size);
 }

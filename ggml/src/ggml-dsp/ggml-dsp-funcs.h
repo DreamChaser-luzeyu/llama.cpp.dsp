@@ -1,6 +1,9 @@
+#pragma once
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+// using cpp guard because ggml-cpu.c is a C source
 
 #include <stdint.h>
 #include <stddef.h>
