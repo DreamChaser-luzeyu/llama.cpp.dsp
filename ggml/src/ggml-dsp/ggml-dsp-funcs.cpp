@@ -535,7 +535,15 @@ void matmul_shs_rt_dsp(
     mt_flush_all();
 
     // --- 将dst反量化为float
-    void * dst_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * n, 0x0);   
+    void * dst_data_fp32_dsp = NULL;
+    bool dst_data_fp32_dsp_needs_free = false;
+    if(get_cluster_id_from_buffer(dst_data_fp32) == test_cluster_id) {
+        dst_data_fp32_dsp = dst_data_fp32;
+    }
+    else {
+        dst_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * n, 0x0);   
+        dst_data_fp32_dsp_needs_free = true;
+    }
     assert(dst_data_fp32_dsp);
     uint64_t trans_16to32_args[] = {
         (size_t)invalid_core_bits[test_cluster_id],
@@ -552,7 +560,7 @@ void matmul_shs_rt_dsp(
     mt_free(lmat_data_fp16_dsp, 0ul);
     if(rmat_data_fp16_dsp_needs_free) { mt_free(rmat_data_fp16_dsp, 0ul); }
     mt_free(dst_data_fp16_dsp, 0ul);
-    mt_free(dst_data_fp32_dsp, 0ul);
+    if(dst_data_fp32_dsp_needs_free) { mt_free(dst_data_fp32_dsp, 0ul); }
     mt_free(tmp_data_fp16_dsp, 0x0ul);
     mt_flush_all();
 }

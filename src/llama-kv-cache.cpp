@@ -108,6 +108,12 @@ bool llama_kv_cache_unified::init(
         auto * buft = it.first;
         auto * ctx  = it.second;
 
+        // --- MY_MODIFY begins
+        // workaround: force use cpu buffer for kv cache because hard to divide into 4 cluster
+        //             while multiple tensor sharing a same buffer
+        // buft = ggml_backend_cpu_buffer_type();
+        // --- MY_MODIFY ends
+
         ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
         if (!buf) {
             LLAMA_LOG_ERROR("%s: failed to allocate buffer for kv cache\n", __func__);

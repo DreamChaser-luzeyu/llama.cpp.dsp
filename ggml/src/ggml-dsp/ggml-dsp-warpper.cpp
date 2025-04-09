@@ -78,7 +78,7 @@ static struct ggml_tensor mkcont_tensor(const struct ggml_compute_params * param
     return ts;
 }
 
-static const int test_cluster_id = TEST_CLUSTER_ID;
+// static const int test_cluster_id = TEST_CLUSTER_ID;
 
 int get_cluster_id_from_buffer(void * ptr);
 
@@ -144,13 +144,13 @@ void override_buffer(const struct ggml_compute_params * params, struct ggml_tens
             size
         );
 
-        // MEM_BARRIER_RW;
-
         // --- set dsp buffer data
         void * old_data = ts->data;
         ggml_backend_buffer_t old_buffer = ts->buffer;
         ts->buffer = dsp_buf;
         ts->data = ggml_backend_buffer_get_base(dsp_buf);
+        // - do the actual memcpy here
+        ggml_backend_buffer_init_tensor(ts->buffer, ts);
         ggml_backend_tensor_set(ts, old_data, 0, size);
         // --- free old buffer
         if(!is_cpu_mapped_buffer(old_buffer) && old_buffer) {
@@ -187,7 +187,7 @@ void ggml_compute_forward_mul_mat_dsp(
     bool go_on_flag = true;
     go_on_flag &= ggml_is_contiguous(dst);
     // go_on_flag &= src0->op != GGML_OP_MUL_MAT
-    if(!go_on_flag) { // 数据不连续时fallback到默认实现
+    if(!go_on_flag) { // dst不连续时fallback到默认实现
         uint64_t bt = __do_get_timestamp_ns();
         ggml_compute_forward_mul_mat(params, dst);
         uint64_t et = __do_get_timestamp_ns();
@@ -246,7 +246,7 @@ void ggml_compute_forward_mul_mat_dsp(
             // );
         } 
         else if(type_src0 == GGML_TYPE_F16 && type_src1 == GGML_TYPE_F32 && type_dst == GGML_TYPE_F32){
-            if((m != 1) && (n % 4 == 0) && (k % 4 == 0)) {
+            if(/*(m != 1) && */(n % 4 == 0) && (k % 4 == 0)) {
                 matmul_shs_rt_dsp(
                     src1->data,
                     src0->data,
@@ -254,15 +254,14 @@ void ggml_compute_forward_mul_mat_dsp(
                     m, k, n
                 );
             }
-            else if((m == 1) && (n % 4 == 0) && (k % 4 == 0)) {
-                // dsp上的gemv确实有问题，目前在dsp上重新实现了简易的gemv，推理结果正确
-                matmul_shs_rt_dsp(
-                    src1->data,
-                    src0->data,
-                    dst->data,
-                    m, k, n
-                );
-            }
+            // else if((m == 1) && (n % 4 == 0) && (k % 4 == 0)) {
+            //     matmul_shs_rt_dsp(
+            //         src1->data,
+            //         src0->data,
+            //         dst->data,
+            //         m, k, n
+            //     );
+            // }
             else {
                 assert(false);
                 uint64_t bt = __do_get_timestamp_ns();
