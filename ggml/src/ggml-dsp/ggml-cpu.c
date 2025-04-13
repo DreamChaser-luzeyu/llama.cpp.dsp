@@ -13857,149 +13857,149 @@ static void ggml_compute_forward_rwkv_wkv7(
 
 // ggml_compute_forward_map_unary
 
-static void ggml_compute_forward_map_unary_f32(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_unary_op_f32_t fun) {
+// static void ggml_compute_forward_map_unary_f32(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_unary_op_f32_t fun) {
 
-    const struct ggml_tensor * src0 = dst->src[0];
+//     const struct ggml_tensor * src0 = dst->src[0];
 
-    if (params->ith != 0) {
-        return;
-    }
+//     if (params->ith != 0) {
+//         return;
+//     }
 
-    assert(ggml_is_contiguous_1(src0));
-    assert(ggml_is_contiguous_1(dst));
-    assert(ggml_are_same_shape(src0, dst));
+//     assert(ggml_is_contiguous_1(src0));
+//     assert(ggml_is_contiguous_1(dst));
+//     assert(ggml_are_same_shape(src0, dst));
 
-    const int n  = ggml_nrows(src0);
-    const int nc = src0->ne[0];
+//     const int n  = ggml_nrows(src0);
+//     const int nc = src0->ne[0];
 
-    for (int i = 0; i < n; i++) {
-        fun(nc,
-                (float *) ((char *) dst->data  + i*( dst->nb[1])),
-                (float *) ((char *) src0->data + i*(src0->nb[1])));
-    }
-}
+//     for (int i = 0; i < n; i++) {
+//         fun(nc,
+//                 (float *) ((char *) dst->data  + i*( dst->nb[1])),
+//                 (float *) ((char *) src0->data + i*(src0->nb[1])));
+//     }
+// }
 
-static void ggml_compute_forward_map_unary(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_unary_op_f32_t fun) {
+// static void ggml_compute_forward_map_unary(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_unary_op_f32_t fun) {
 
-    const struct ggml_tensor * src0 = dst->src[0];
+//     const struct ggml_tensor * src0 = dst->src[0];
 
-    switch (src0->type) {
-        case GGML_TYPE_F32:
-            {
-                ggml_compute_forward_map_unary_f32(params, dst, fun);
-            } break;
-        default:
-            {
-                GGML_ABORT("fatal error");
-            }
-    }
-}
+//     switch (src0->type) {
+//         case GGML_TYPE_F32:
+//             {
+//                 ggml_compute_forward_map_unary_f32(params, dst, fun);
+//             } break;
+//         default:
+//             {
+//                 GGML_ABORT("fatal error");
+//             }
+//     }
+// }
 
 // ggml_compute_forward_map_binary
 
-static void ggml_compute_forward_map_binary_f32(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_binary_op_f32_t fun) {
+// static void ggml_compute_forward_map_binary_f32(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_binary_op_f32_t fun) {
 
-    const struct ggml_tensor * src0 = dst->src[0];
-    const struct ggml_tensor * src1 = dst->src[1];
+//     const struct ggml_tensor * src0 = dst->src[0];
+//     const struct ggml_tensor * src1 = dst->src[1];
 
-    if (params->ith != 0) {
-        return;
-    }
+//     if (params->ith != 0) {
+//         return;
+//     }
 
-    assert(ggml_is_contiguous_1(src0));
-    assert(ggml_is_contiguous_1(src1));
-    assert(ggml_is_contiguous_1(dst));
-    assert(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
+//     assert(ggml_is_contiguous_1(src0));
+//     assert(ggml_is_contiguous_1(src1));
+//     assert(ggml_is_contiguous_1(dst));
+//     assert(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
 
-    const int n  = ggml_nrows(src0);
-    const int nc = src0->ne[0];
+//     const int n  = ggml_nrows(src0);
+//     const int nc = src0->ne[0];
 
-    for (int i = 0; i < n; i++) {
-        fun(nc,
-                (float *) ((char *) dst->data  + i*( dst->nb[1])),
-                (float *) ((char *) src0->data + i*(src0->nb[1])),
-                (float *) ((char *) src1->data + i*(src1->nb[1])));
-    }
-}
+//     for (int i = 0; i < n; i++) {
+//         fun(nc,
+//                 (float *) ((char *) dst->data  + i*( dst->nb[1])),
+//                 (float *) ((char *) src0->data + i*(src0->nb[1])),
+//                 (float *) ((char *) src1->data + i*(src1->nb[1])));
+//     }
+// }
 
-static void ggml_compute_forward_map_binary(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_binary_op_f32_t fun) {
+// static void ggml_compute_forward_map_binary(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_binary_op_f32_t fun) {
 
-    const struct ggml_tensor * src0 = dst->src[0];
+//     const struct ggml_tensor * src0 = dst->src[0];
 
-    switch (src0->type) {
-        case GGML_TYPE_F32:
-            {
-                ggml_compute_forward_map_binary_f32(params, dst, fun);
-            } break;
-        default:
-            {
-                GGML_ABORT("fatal error");
-            }
-    }
-}
+//     switch (src0->type) {
+//         case GGML_TYPE_F32:
+//             {
+//                 ggml_compute_forward_map_binary_f32(params, dst, fun);
+//             } break;
+//         default:
+//             {
+//                 GGML_ABORT("fatal error");
+//             }
+//     }
+// }
 
 // ggml_compute_forward_map_custom1
 
-static void ggml_compute_forward_map_custom1_f32(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_custom1_op_f32_t fun) {
+// static void ggml_compute_forward_map_custom1_f32(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_custom1_op_f32_t fun) {
 
-    const struct ggml_tensor * a = dst->src[0];
+//     const struct ggml_tensor * a = dst->src[0];
 
-    if (params->ith != 0) {
-        return;
-    }
+//     if (params->ith != 0) {
+//         return;
+//     }
 
-    fun(dst, a);
-}
+//     fun(dst, a);
+// }
 
 // ggml_compute_forward_map_custom2
 
-static void ggml_compute_forward_map_custom2_f32(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_custom2_op_f32_t fun) {
+// static void ggml_compute_forward_map_custom2_f32(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_custom2_op_f32_t fun) {
 
-    const struct ggml_tensor * a = dst->src[0];
-    const struct ggml_tensor * b = dst->src[1];
+//     const struct ggml_tensor * a = dst->src[0];
+//     const struct ggml_tensor * b = dst->src[1];
 
-    if (params->ith != 0) {
-        return;
-    }
+//     if (params->ith != 0) {
+//         return;
+//     }
 
-    fun(dst, a, b);
-}
+//     fun(dst, a, b);
+// }
 
 // ggml_compute_forward_map_custom3
 
-static void ggml_compute_forward_map_custom3_f32(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const ggml_custom3_op_f32_t fun) {
+// static void ggml_compute_forward_map_custom3_f32(
+//         const struct ggml_compute_params * params,
+//         struct ggml_tensor * dst,
+//         const ggml_custom3_op_f32_t fun) {
 
-    const struct ggml_tensor * a = dst->src[0];
-    const struct ggml_tensor * b = dst->src[1];
-    const struct ggml_tensor * c = dst->src[1];
+//     const struct ggml_tensor * a = dst->src[0];
+//     const struct ggml_tensor * b = dst->src[1];
+//     const struct ggml_tensor * c = dst->src[1];
 
-    if (params->ith != 0) {
-        return;
-    }
+//     if (params->ith != 0) {
+//         return;
+//     }
 
-    fun(dst, a, b, c);
-}
+//     fun(dst, a, b, c);
+// }
 
 // ggml_compute_forward_map_custom1
 
@@ -14636,41 +14636,41 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_rwkv_wkv7(params, tensor);
             } break;
-        case GGML_OP_MAP_UNARY:
-            {
-                ggml_unary_op_f32_t fun;
-                memcpy(&fun, tensor->op_params, sizeof(fun));
-                ggml_compute_forward_map_unary(params, tensor, fun);
-            }
-            break;
-        case GGML_OP_MAP_BINARY:
-            {
-                ggml_binary_op_f32_t fun;
-                memcpy(&fun, tensor->op_params, sizeof(fun));
-                ggml_compute_forward_map_binary(params, tensor, fun);
-            }
-            break;
-        case GGML_OP_MAP_CUSTOM1_F32:
-            {
-                ggml_custom1_op_f32_t fun;
-                memcpy(&fun, tensor->op_params, sizeof(fun));
-                ggml_compute_forward_map_custom1_f32(params, tensor, fun);
-            }
-            break;
-        case GGML_OP_MAP_CUSTOM2_F32:
-            {
-                ggml_custom2_op_f32_t fun;
-                memcpy(&fun, tensor->op_params, sizeof(fun));
-                ggml_compute_forward_map_custom2_f32(params, tensor, fun);
-            }
-            break;
-        case GGML_OP_MAP_CUSTOM3_F32:
-            {
-                ggml_custom3_op_f32_t fun;
-                memcpy(&fun, tensor->op_params, sizeof(fun));
-                ggml_compute_forward_map_custom3_f32(params, tensor, fun);
-            }
-            break;
+        // case GGML_OP_MAP_UNARY:
+        //     {
+        //         ggml_unary_op_f32_t fun;
+        //         memcpy(&fun, tensor->op_params, sizeof(fun));
+        //         ggml_compute_forward_map_unary(params, tensor, fun);
+        //     }
+        //     break;
+        // case GGML_OP_MAP_BINARY:
+        //     {
+        //         ggml_binary_op_f32_t fun;
+        //         memcpy(&fun, tensor->op_params, sizeof(fun));
+        //         ggml_compute_forward_map_binary(params, tensor, fun);
+        //     }
+        //     break;
+        // case GGML_OP_MAP_CUSTOM1_F32:
+        //     {
+        //         ggml_custom1_op_f32_t fun;
+        //         memcpy(&fun, tensor->op_params, sizeof(fun));
+        //         ggml_compute_forward_map_custom1_f32(params, tensor, fun);
+        //     }
+        //     break;
+        // case GGML_OP_MAP_CUSTOM2_F32:
+        //     {
+        //         ggml_custom2_op_f32_t fun;
+        //         memcpy(&fun, tensor->op_params, sizeof(fun));
+        //         ggml_compute_forward_map_custom2_f32(params, tensor, fun);
+        //     }
+        //     break;
+        // case GGML_OP_MAP_CUSTOM3_F32:
+        //     {
+        //         ggml_custom3_op_f32_t fun;
+        //         memcpy(&fun, tensor->op_params, sizeof(fun));
+        //         ggml_compute_forward_map_custom3_f32(params, tensor, fun);
+        //     }
+        //     break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -14937,11 +14937,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_WIN_PART:
         case GGML_OP_WIN_UNPART:
         case GGML_OP_GET_REL_POS:
-        case GGML_OP_MAP_UNARY:
-        case GGML_OP_MAP_BINARY:
-        case GGML_OP_MAP_CUSTOM1_F32:
-        case GGML_OP_MAP_CUSTOM2_F32:
-        case GGML_OP_MAP_CUSTOM3_F32:
+        // case GGML_OP_MAP_UNARY:
+        // case GGML_OP_MAP_BINARY:
+        // case GGML_OP_MAP_CUSTOM1_F32:
+        // case GGML_OP_MAP_CUSTOM2_F32:
+        // case GGML_OP_MAP_CUSTOM3_F32:
             {
                 n_tasks = 1;
             } break;
