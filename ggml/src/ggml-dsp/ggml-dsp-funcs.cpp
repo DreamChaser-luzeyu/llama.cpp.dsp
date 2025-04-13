@@ -12,7 +12,7 @@
 #include "ggml.h"
 #include "ggml-cpu-impl.h"
 
-#include "ggml-dsp-funcs.h"
+#include "dsp_utils.h"
 #include "MTUtils.hpp"
 #include "MTHelper.hpp"
 
@@ -27,6 +27,7 @@ static DECLARE_DSP_GFUNC_ARR(trans_32to16);
 static DECLARE_DSP_GFUNC_ARR(silu_forward_fp16_general);
 static DECLARE_DSP_GFUNC_ARR(trans_16to32);
 static DECLARE_DSP_GFUNC_ARR(dsp_softmax_forward_fp16);
+static DECLARE_DSP_GFUNC_ARR(dsp_softmax_forward);
 static DECLARE_DSP_GFUNC_ARR(dsp_gemv_forward_fp16_big_k_sm);
 // static DECLARE_DSP_GFUNC_ARR(dsp_gemm_forward_fp16_big_k_sm);
 static DECLARE_DSP_GFUNC_ARR(dsp_gemv_forward_fp16_big_k);
@@ -35,6 +36,10 @@ static DECLARE_DSP_GFUNC_ARR(general_sgemm_k_self_fp16);
 static DECLARE_DSP_GFUNC_ARR(bmm_fp16);
 static DECLARE_DSP_GFUNC_ARR(gemm_forward_fp16);
 static DECLARE_DSP_GFUNC_ARR(dsp_new_gemm_fp16);
+static DECLARE_DSP_GFUNC_ARR(dsp_rms_norm_forward_fp16);
+static DECLARE_DSP_GFUNC_ARR(dsp_rms_norm_nodot_forward_fp16);
+static DECLARE_DSP_GFUNC_ARR(dsp_rope_forward_fp16_v2);
+static DECLARE_DSP_GFUNC_ARR(softmax_forward_fp16_4d_lastdim_xxx_general);
 
 // ------- 可用核信息
 static int valid_core_indexes[NR_CLUSTER][NR_CORE_PER_CLUSTER];
@@ -85,6 +90,7 @@ void init_dsp() {
             REG_DSP_GFUNCTION(silu_forward_fp16_general, cluster_id, core_id);
             REG_DSP_GFUNCTION(trans_16to32, cluster_id, core_id);
             REG_DSP_GFUNCTION(dsp_softmax_forward_fp16, cluster_id, core_id);
+            REG_DSP_GFUNCTION(dsp_softmax_forward, cluster_id, core_id);
             REG_DSP_GFUNCTION(dsp_gemv_forward_fp16_big_k_sm, cluster_id, core_id);
             // REG_DSP_GFUNCTION(dsp_gemm_forward_fp16_big_k_sm, cluster_id, core_id);
             REG_DSP_GFUNCTION(dsp_gemv_forward_fp16_big_k, cluster_id, core_id);
@@ -93,6 +99,10 @@ void init_dsp() {
             REG_DSP_GFUNCTION(bmm_fp16, cluster_id, core_id);
             REG_DSP_GFUNCTION(gemm_forward_fp16, cluster_id, core_id);
             REG_DSP_GFUNCTION(dsp_new_gemm_fp16, cluster_id, core_id);
+            REG_DSP_GFUNCTION(dsp_rms_norm_forward_fp16, cluster_id, core_id);
+            REG_DSP_GFUNCTION(dsp_rms_norm_nodot_forward_fp16, cluster_id, core_id);
+            REG_DSP_GFUNCTION(dsp_rope_forward_fp16_v2, cluster_id, core_id);
+            REG_DSP_GFUNCTION(softmax_forward_fp16_4d_lastdim_xxx_general, cluster_id, core_id);
         }
     }
     // ----- 获得可用核
@@ -112,69 +122,13 @@ void init_dsp() {
     #endif
 
 
-    // static DSPHelper helper(&mt_dev);
+    static DSPHelper helper(&mt_dev);
+    // it is recommended to use `tail -f <path>` to monitor the result
     debug_file = fopen("/home/tju/luzeyu/llama_original/llama.cpp/dump.out", "w+");
 
     dsp_test_and_debug();
 
     is_initialized = true;
-}
-
-typedef struct addr_range {
-    void * ptr;
-    size_t size;
-    int cluster_id;
-} addr_range_t;
-
-std::unordered_map<void *, addr_range_t> mtmalloc_set;
-
-int get_cluster_id_from_buffer(void * ptr) {
-    auto it = mtmalloc_set.find(ptr);
-    if(it != mtmalloc_set.end()) {
-        return (*it).second.cluster_id;
-    }
-
-    for(const auto& p : mtmalloc_set) {
-        if(p.second.ptr < ptr && ptr < ((uint8_t *)p.second.ptr + p.second.size)) {
-            return p.second.cluster_id;
-        }
-    }
-
-    return -1;
-}
-
-void * dsp_malloc(size_t size) {
-    // check if dev initialized before allocing
-    if(!is_initialized) {
-        init_dsp();
-    }
-
-    void * dsp_data = mt_malloc(test_cluster_id, size, 0ul);
-    // void * dsp_data = malloc(size);  // for test ? 
-    assert(dsp_data);
-    addr_range_t range = {
-        .ptr = dsp_data,
-        .size = size,
-        .cluster_id = test_cluster_id
-    };
-    mtmalloc_set[dsp_data] = range;
-    return dsp_data;
-}
-
-void dsp_free(void * ptr) {
-    if(!is_initialized) {
-        init_dsp();
-    }
-
-    auto it = mtmalloc_set.find(ptr);
-    if(it != mtmalloc_set.end()) {
-        mt_free(it->second.ptr, 0ul);
-        // free(it->second.ptr);
-        mtmalloc_set.erase(it);
-        return;
-    }
-    // assert(false); // Not a mt_malloced pointer
-    // free(ptr);
 }
 
 static inline void call_func_on_all_cores(int cluster_id, const multi_core_dsp_func_t & multi_core_func, unsigned long *args, int params_num, int expected_core_num = 22) {
@@ -199,24 +153,271 @@ static inline void call_func_on_all_cores(int cluster_id, const multi_core_dsp_f
     }
 }
 
-static std::mutex test_mutex;
-void ggml_vec_silu_f32_dsp(const int n, float * dst, const float * src) {
-    test_mutex.lock();
+void rmsnorm_fp32_dsp(
+    void * src, void * dst, size_t nr_rows, size_t nr_cols,
+    float eps
+) {
+    assert(dsp_get_cluster_id_from_ptr(src) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(dst) == dsp_get_main_cluster());
+    assert(nr_cols % 32 == 0);
 
-    // if(!is_initialized) { 
-    //     init_dsp(); 
-    //     is_initialized = true;
+    void * src_fp16_dsp = dsp_malloc_on_cluster(
+        sizeof(__fp16) * nr_rows * nr_cols, dsp_get_main_cluster());
+    void * dst_fp16_dsp = dsp_malloc_on_cluster(
+        sizeof(__fp16) * nr_rows * nr_cols, dsp_get_main_cluster());
+
+    uint64_t trans_32to16_args[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_rows * nr_cols),
+        DSP_PARAM(src),
+        DSP_PARAM(src_fp16_dsp)
+    };
+    call_func_on_all_cores(dsp_get_main_cluster(), trans_32to16_FuncArr, trans_32to16_args, 4);
+
+    // 如果使用原版的 与权重相乘的小融合算子，则需要传入一个全1的权重（乘完相当于没乘）
+    // void * _1_val_fp16_vec = dsp_malloc_on_cluster(sizeof(__fp16) * nr_rows * nr_cols, dsp_get_main_cluster());
+    // for(size_t i = 0; i < nr_rows * nr_cols; i++) {
+    //     ((__fp16*)_1_val_fp16_vec)[i] = (__fp16)1.0;
     // }
+    // mt_flush(_1_val_fp16_vec, nr_rows * nr_cols * sizeof(__fp16));
+    // mt_flush_all();
+
+    uint64_t rmsn_args[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM(src_fp16_dsp),
+        DSP_PARAM(0x66ccfful), // not used, set anything
+        DSP_PARAM(dst_fp16_dsp),
+        DSP_PARAM((double)(eps)),
+        DSP_PARAM(nr_rows),
+        DSP_PARAM(nr_cols)
+    };
+    call_func_on_all_cores(dsp_get_main_cluster(), dsp_rms_norm_nodot_forward_fp16_FuncArr, rmsn_args, 7);
+
+    uint64_t trans_16to32_args[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_rows * nr_cols),
+        DSP_PARAM(dst_fp16_dsp),
+        DSP_PARAM(dst)
+    };
+    call_func_on_all_cores(test_cluster_id, trans_16to32_FuncArr, trans_16to32_args, 4);
+
+    dsp_free(src_fp16_dsp);
+    dsp_free(dst_fp16_dsp);
+    // dsp_free(_1_val_fp16_vec);
+}
+
+void rope_fp16_ref(
+    void * src, void * sin_vals, void * cos_vals,
+    void * dst, size_t nr_rows, size_t nr_cols
+) {
+    assert(nr_cols % 2 == 0);
+
+    __fp16 * sin_vals_fp16 = (__fp16 *)sin_vals;
+    __fp16 * cos_vals_fp16 = (__fp16 *)cos_vals;
+    
+    typedef __fp16(*row_ptr_t)[nr_cols];
+    row_ptr_t src_fp16_arr = (row_ptr_t)src;
+    row_ptr_t dst_fp16_arr = (row_ptr_t)dst;
+
+    for(size_t cr = 0; cr < nr_rows; cr++) {
+        for(size_t cc = 0; cc < nr_cols; cc+=2) {
+            size_t sin_cos_idx = cc / 2;
+            __fp16 sin_val = sin_vals_fp16[sin_cos_idx];
+            __fp16 cos_val = cos_vals_fp16[sin_cos_idx];
+            __fp16 x0 = src_fp16_arr[cr][cc];
+            __fp16 x1 = src_fp16_arr[cr][cc + 1];
+            dst_fp16_arr[cr][cc]     = x0 * cos_val - x1 * sin_val;
+            dst_fp16_arr[cr][cc + 1] = x0 * sin_val + x1 * cos_val;
+        }
+    }
+}
+
+void rope_fp32_ref(
+    void * src, void * sin_vals, void * cos_vals,
+    void * dst, size_t nr_rows, size_t nr_cols
+) {
+    assert(nr_cols % 2 == 0);
+    assert(nr_rows == 1);
+
+    float * sin_vals_fp32 = (float *)sin_vals;
+    float * cos_vals_fp32 = (float *)cos_vals;
+    
+    typedef float(*row_ptr_t)[nr_cols];
+    row_ptr_t src_fp32_arr = (row_ptr_t)src;
+    row_ptr_t dst_fp32_arr = (row_ptr_t)dst;
+
+    for(size_t cr = 0; cr < nr_rows; cr++) {
+        for(size_t cc = 0; cc < nr_cols; cc+=2) {
+            size_t sin_cos_idx = cc / 2;
+            float sin_val = sin_vals_fp32[sin_cos_idx];
+            float cos_val = cos_vals_fp32[sin_cos_idx];
+            float x0 = src_fp32_arr[cr][cc];
+            float x1 = src_fp32_arr[cr][cc + 1];
+            dst_fp32_arr[cr][cc]     = x0 * cos_val - x1 * sin_val;
+            dst_fp32_arr[cr][cc + 1] = x0 * sin_val + x1 * cos_val;
+        }
+    }    
+}
+
+void rope_fp32_dsp(
+    void * src, void * sin_vals, void * cos_vals,
+    void * dst, size_t nr_rows, size_t nr_cols
+) {
+    assert(dsp_get_cluster_id_from_ptr(src) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(sin_vals) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(cos_vals) == dsp_get_main_cluster());
+    mt_flush_all();
+
+    // ----- 
+    void * src_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_rows * nr_cols, dsp_get_main_cluster());
+    uint64_t trans_32to16_args[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_rows * nr_cols),
+        DSP_PARAM(src),
+        DSP_PARAM(src_fp16)
+    };
+    call_func_on_all_cores(test_cluster_id, trans_32to16_FuncArr, trans_32to16_args, 4);
+
+    void * sin_vals_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_cols, dsp_get_main_cluster());
+    uint64_t trans_32to16_args_2[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_cols),
+        DSP_PARAM(sin_vals),
+        DSP_PARAM(sin_vals_fp16)
+    };
+    call_func_on_all_cores(test_cluster_id, trans_32to16_FuncArr, trans_32to16_args_2, 4);
+
+    void * cos_vals_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_cols, dsp_get_main_cluster());
+    uint64_t trans_32to16_args_3[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_cols),
+        DSP_PARAM(cos_vals),
+        DSP_PARAM(cos_vals_fp16)
+    };
+    call_func_on_all_cores(test_cluster_id, trans_32to16_FuncArr, trans_32to16_args_3, 4);
+
+    void * dst_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_rows * nr_cols, dsp_get_main_cluster());
+    uint64_t args[] = {
+        DSP_PARAM(0x000000ul),
+        DSP_PARAM(src_fp16),
+        DSP_PARAM(sin_vals_fp16),
+        DSP_PARAM(cos_vals_fp16),
+        DSP_PARAM(dst_fp16),
+        DSP_PARAM(nr_rows),
+        DSP_PARAM(nr_cols),
+        DSP_PARAM(0ul) // unused
+    };
+    call_func_on_all_cores(dsp_get_main_cluster(), dsp_rope_forward_fp16_v2_FuncArr, args, 8);
+
+    uint64_t trans_16to32_args[] = {
+        (size_t)invalid_core_bits[dsp_get_main_cluster()],
+        DSP_PARAM((uint64_t)nr_rows * nr_cols),
+        DSP_PARAM(dst_fp16),
+        DSP_PARAM(dst)
+    };
+    call_func_on_all_cores(test_cluster_id, trans_16to32_FuncArr, trans_16to32_args, 4);
+
+    dsp_free(src_fp16);
+    dsp_free(sin_vals_fp16);
+    dsp_free(cos_vals_fp16);
+    dsp_free(dst_fp16);
+}
+
+void rope_fp16_dsp(
+    void * src, void * sin_vals, void * cos_vals,
+    void * dst, size_t nr_rows, size_t nr_cols
+) {
+    assert(dsp_get_cluster_id_from_ptr(src) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(sin_vals) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(cos_vals) == dsp_get_main_cluster());
+
+    uint64_t args[] = {
+        DSP_PARAM(0x000000ul),
+        DSP_PARAM(src),
+        DSP_PARAM(sin_vals),
+        DSP_PARAM(cos_vals),
+        DSP_PARAM(dst),
+        DSP_PARAM(nr_rows),
+        DSP_PARAM(nr_cols),
+        DSP_PARAM(0ul) // unused
+    };
+    call_func_on_all_cores(dsp_get_main_cluster(), dsp_rope_forward_fp16_v2_FuncArr, args, 8);
+}
+
+void softmax_fp32_ref(
+    void * src, void * dst, size_t nr_row, size_t nr_col
+) {
+    size_t nc = nr_col;
+    assert(nr_row == 1l);
+    float * wp = (float*)src;
+    float * dp = (float*)dst;
+    
+    // 1 - 从wp取最大值
+    float max = -INFINITY;
+    for(size_t i = 0; i < nc; i++) { max = std::max(max, wp[i]); } // ggml_vec_max_f32(nc, &max, wp);
+    // 2 - 进行softmax计算
+    typedef double ggml_float;
+    ggml_float sum = 0;
+    // 2.1 计算dp每个元素 expf(wp[i] - max)
+    for (size_t i = 0; i < nc; ++i) {
+        float val = expf(wp[i] - max);
+        sum += (ggml_float)val;
+        dp[i] = val;
+    }
+    assert(sum > 0.0);
+    // 2.2 归一化
+    sum = 1.0/sum;
+    for(size_t i = 0; i < nc; i++) { ((float*)dp)[i] *= sum; }     // ggml_vec_scale_f32(nc, dp, sum);
+}
+
+void softmax_fp32_dsp(
+    void * src, void * dst, size_t nr_row, size_t nr_col
+) {
+    assert(dsp_get_cluster_id_from_ptr(src) == dsp_get_main_cluster());
+    assert(dsp_get_cluster_id_from_ptr(dst) == dsp_get_main_cluster());
+    uint64_t args[5] = {
+        DSP_PARAM(0x000000ul),
+        DSP_PARAM(src),
+        DSP_PARAM(dst),
+        DSP_PARAM(nr_row),
+        DSP_PARAM(nr_col)
+    };
+    call_func_on_all_cores(dsp_get_main_cluster(), dsp_softmax_forward_FuncArr, args, 5);
+    // void * inputs_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_row * nr_col, dsp_get_main_cluster());
+    // void * outputs_fp16 = dsp_malloc_on_cluster(sizeof(__fp16) * nr_row * nr_col, dsp_get_main_cluster());
+    // uint64_t args[7] = {
+    //     DSP_PARAM(0x000000ul),
+    //     DSP_PARAM(src),
+    //     DSP_PARAM(dst),
+    //     DSP_PARAM(inputs_fp16),
+    //     DSP_PARAM(outputs_fp16),
+    //     DSP_PARAM(nr_row),
+    //     DSP_PARAM(nr_col)
+    // };
+    // mt_flush_all();
+    // call_func_on_all_cores(dsp_get_main_cluster(), softmax_forward_fp16_4d_lastdim_xxx_general_FuncArr, args, 7);
+    // dsp_free(inputs_fp16);
+    // dsp_free(outputs_fp16);
+}
+
+void silu_fp32_dsp(const int n, float * dst, const float * src) {
+    // test_mutex.lock();
+    assert(test_cluster_id == dsp_get_main_cluster());
+    
+    void * src_fp32 = (void*)src;
+    if(dsp_get_cluster_id_from_ptr((void*)src) != test_cluster_id) {
+        src_fp32 = dsp_malloc_on_cluster(sizeof(float) * n, dsp_get_main_cluster());
+        memcpy(src_fp32, src, sizeof(float) * n);
+        mt_flush_all();
+        assert(false);
+    }
     
     // --- 开辟空间
-    void * src_fp32 = mt_malloc(test_cluster_id, sizeof(float) * n, 0ul);
     void * src_fp16 = mt_malloc(test_cluster_id, sizeof(__fp16) * n, 0ul);
-    void * dst_fp32 = mt_malloc(test_cluster_id, sizeof(float) * n, 0ul);
+    // void * dst_fp32 = mt_malloc(test_cluster_id, sizeof(float) * n, 0ul);
     void * dst_fp16 = mt_malloc(test_cluster_id, sizeof(__fp16) * n, 0ul);
     
     // --- 量化为fp16
-    memcpy(src_fp32, src, sizeof(float) * n);
-    mt_flush_all();
     uint64_t trans_32to16_args[] = {
         (size_t)invalid_core_bits[test_cluster_id],
         DSP_PARAM((uint64_t)n),
@@ -234,6 +435,14 @@ void ggml_vec_silu_f32_dsp(const int n, float * dst, const float * src) {
     };
     call_func_on_all_cores(test_cluster_id, silu_forward_fp16_general_FuncArr, silu_forward_fp16_args, 4);
     
+    void * dst_fp32 = dst;
+    if(dsp_get_cluster_id_from_ptr(dst) != dsp_get_main_cluster()) {
+        // memcpy(dst, dst_fp32, sizeof(float) * n);
+        // mt_flush_all();
+        dst_fp32 = dsp_malloc_on_cluster(sizeof(float) * n, dsp_get_main_cluster());
+        assert(false);
+    }
+
     // --- 转回float
     uint64_t trans_16to32_args[] = {
         (size_t)invalid_core_bits[test_cluster_id],
@@ -243,19 +452,20 @@ void ggml_vec_silu_f32_dsp(const int n, float * dst, const float * src) {
     };
     call_func_on_all_cores(test_cluster_id, trans_16to32_FuncArr, trans_16to32_args, 4);
 
-    memcpy(dst, dst_fp32, sizeof(float) * n);
+    
 
     mt_free(src_fp16, 0);
-    mt_free(src_fp32, 0);
+    if(src_fp32 != src) { mt_free(src_fp32, 0); }
     mt_free(dst_fp16, 0);
-    mt_free(dst_fp32, 0);
+    if(dst_fp32 != dst) { 
+        memcpy(dst, dst_fp32, sizeof(float) * n);
+        mt_free(dst_fp32, 0); 
+    }
     mt_flush_all();
-    
-    test_mutex.unlock();
 }
 
 void trans_fp32_to_fp16_dsp(void * src, void * dst, size_t nr_elem) {
-    test_mutex.lock();
+    // test_mutex.lock();
 
     // if(!is_initialized) { 
     //     init_dsp(); 
@@ -278,7 +488,7 @@ void trans_fp32_to_fp16_dsp(void * src, void * dst, size_t nr_elem) {
     call_func_on_all_cores(test_cluster_id, trans_32to16_FuncArr, trans_32to16_args, 4);
     memcpy(dst, data_fp16, sizeof(__fp16) * nr_elem);
 
-    test_mutex.unlock();
+    // test_mutex.unlock();
 }
 
 void matmul_fp16_ref(
@@ -401,16 +611,25 @@ void matmul_shs_dsp(
     void * dst_data_fp32,
     size_t m, size_t k, size_t n
 ) {
-    // if(!is_initialized) { 
-    //     init_dsp(); 
-    //     is_initialized = true;
-    // }
-
-    // --- 将lmat量化为fp16
-    void * lmat_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * k, 0x0);
-    memcpy(lmat_data_fp32_dsp, lmat_data_fp32, sizeof(float) * m * k);
     mt_flush_all();
+
+    void * lmat_data_fp32_dsp;
+    bool lmat_data_fp32_dsp_needs_free = false;
+    if(dsp_get_cluster_id_from_ptr(lmat_data_fp32) != test_cluster_id) {
+        lmat_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * k, 0x0);
+        assert(lmat_data_fp32_dsp);
+        memcpy(lmat_data_fp32_dsp, lmat_data_fp32, sizeof(float) * m * k);
+        lmat_data_fp32_dsp_needs_free = true;
+        mt_flush_all();
+        assert(false);
+    } 
+    else {
+        lmat_data_fp32_dsp = lmat_data_fp32;
+    }
+    
+    // --- 将lmat量化为fp16
     void * lmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * m * k, 0x0);
+    assert(lmat_data_fp16_dsp);
     uint64_t trans_32to16_args[] = {
         (size_t)invalid_core_bits[test_cluster_id],
         DSP_PARAM((uint64_t)(m * k)),
@@ -421,30 +640,56 @@ void matmul_shs_dsp(
     mt_flush_all();
 
     // --- 计算矩阵乘
-    void * rmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * k * n, 0x0);
-    memcpy(rmat_data_fp16_dsp, rmat_data_fp16, sizeof(__fp16) * k * n);
-    mt_flush_all();
+    void * rmat_data_fp16_dsp = NULL;
+    bool rmat_data_fp16_dsp_needs_free = false;
+    if(dsp_get_cluster_id_from_ptr(rmat_data_fp16) != test_cluster_id) {
+        rmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * k * n, 0x0);
+        assert(rmat_data_fp16_dsp);
+        memcpy(rmat_data_fp16_dsp, rmat_data_fp16, sizeof(__fp16) * k * n);
+        mt_flush_all();
+        rmat_data_fp16_dsp_needs_free = true;
+        assert(false);
+    }
+    else {
+        rmat_data_fp16_dsp = rmat_data_fp16;
+    }
+    
     void * dst_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * m * n, 0x0);
+    assert(dst_data_fp16_dsp);
+    void * tmp_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * (m * n + n * k), 0x0);
+    assert(tmp_data_fp16_dsp);
 
     uint64_t args[] = {
-        0x000000ul,
         DSP_PARAM(lmat_data_fp16_dsp),
+        DSP_PARAM(0ul),
         DSP_PARAM(rmat_data_fp16_dsp),
+        DSP_PARAM(0ul),
         DSP_PARAM(dst_data_fp16_dsp),
+        DSP_PARAM(tmp_data_fp16_dsp),
         DSP_PARAM(m),
         DSP_PARAM(k),
         DSP_PARAM(n)
     };
     call_func_on_all_cores(
         test_cluster_id, 
-        gemm_forward_fp16_FuncArr, 
+        dsp_new_gemm_fp16_FuncArr, 
         args, 
-        7
+        9
     );
     mt_flush_all();
 
     // --- 将dst反量化为float
-    void * dst_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * n, 0x0);    
+    void * dst_data_fp32_dsp = NULL;
+    bool dst_data_fp32_dsp_needs_free = false;
+    if(dsp_get_cluster_id_from_ptr(dst_data_fp32) == test_cluster_id) {
+        dst_data_fp32_dsp = dst_data_fp32;
+    }
+    else {
+        dst_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * n, 0x0);   
+        dst_data_fp32_dsp_needs_free = true;
+        assert(false);
+    }
+    assert(dst_data_fp32_dsp);
     uint64_t trans_16to32_args[] = {
         (size_t)invalid_core_bits[test_cluster_id],
         DSP_PARAM((uint64_t)(m * n)),
@@ -454,13 +699,15 @@ void matmul_shs_dsp(
     call_func_on_all_cores(test_cluster_id, trans_16to32_FuncArr, trans_16to32_args, 4);
     mt_flush_all();
     
-    memcpy(dst_data_fp32, dst_data_fp32_dsp, sizeof(float) * (m * n));
+    // memcpy(dst_data_fp32, dst_data_fp32_dsp, sizeof(float) * (m * n));
 
-    mt_free(lmat_data_fp32_dsp, 0ul);
+    if(lmat_data_fp32_dsp_needs_free) { mt_free(lmat_data_fp32_dsp, 0ul); }
     mt_free(lmat_data_fp16_dsp, 0ul);
-    mt_free(rmat_data_fp16_dsp, 0ul);
+    if(rmat_data_fp16_dsp_needs_free) { mt_free(rmat_data_fp16_dsp, 0ul); }
     mt_free(dst_data_fp16_dsp, 0ul);
-    mt_free(dst_data_fp32_dsp, 0ul);
+    if(dst_data_fp32_dsp_needs_free) { mt_free(dst_data_fp32_dsp, 0ul); }
+    mt_free(tmp_data_fp16_dsp, 0x0ul);
+    mt_flush_all();
 }
 
 void matmul_shs_rt_dsp(
@@ -473,7 +720,7 @@ void matmul_shs_rt_dsp(
 
     void * lmat_data_fp32_dsp;
     bool lmat_data_fp32_dsp_needs_free = false;
-    if(get_cluster_id_from_buffer(lmat_data_fp32) != test_cluster_id) {
+    if(dsp_get_cluster_id_from_ptr(lmat_data_fp32) != test_cluster_id) {
         lmat_data_fp32_dsp = mt_malloc(test_cluster_id, sizeof(float) * m * k, 0x0);
         assert(lmat_data_fp32_dsp);
         memcpy(lmat_data_fp32_dsp, lmat_data_fp32, sizeof(float) * m * k);
@@ -499,7 +746,7 @@ void matmul_shs_rt_dsp(
     // --- 计算矩阵乘
     void * rmat_data_fp16_dsp = NULL;
     bool rmat_data_fp16_dsp_needs_free = false;
-    if(get_cluster_id_from_buffer(rmat_data_fp16) != test_cluster_id) {
+    if(dsp_get_cluster_id_from_ptr(rmat_data_fp16) != test_cluster_id) {
         rmat_data_fp16_dsp = mt_malloc(test_cluster_id, sizeof(__fp16) * k * n, 0x0);
         assert(rmat_data_fp16_dsp);
         memcpy(rmat_data_fp16_dsp, rmat_data_fp16, sizeof(__fp16) * k * n);
@@ -537,7 +784,7 @@ void matmul_shs_rt_dsp(
     // --- 将dst反量化为float
     void * dst_data_fp32_dsp = NULL;
     bool dst_data_fp32_dsp_needs_free = false;
-    if(get_cluster_id_from_buffer(dst_data_fp32) == test_cluster_id) {
+    if(dsp_get_cluster_id_from_ptr(dst_data_fp32) == test_cluster_id) {
         dst_data_fp32_dsp = dst_data_fp32;
     }
     else {

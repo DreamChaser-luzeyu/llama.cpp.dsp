@@ -12,5 +12,8 @@ list (APPEND GGML_DSP_SOURCES
     ggml-cpu-impl.h
     ggml-dsp-funcs.cpp
     ggml-dsp-warpper.cpp
+
+    dsp_buffer_utils.cpp
+    dsp_tensor_utils.cpp
     )
 ggml_add_backend_library(${GGML_DSP_NAME} ${GGML_DSP_SOURCES})

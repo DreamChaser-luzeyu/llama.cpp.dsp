@@ -307,7 +307,8 @@
                 "GGML_NATIVE": "OFF",
                 "GGML_BACKEND_DL": "ON",
                 "GGML_DSP": "ON",
-                "GGML_MATMULREF": "ON"
+                "GGML_MATMULREF": "ON",
+                "LLAMA_CURL": "OFF"
             }
         }
     ]

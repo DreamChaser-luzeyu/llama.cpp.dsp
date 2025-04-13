@@ -5,7 +5,7 @@
 #include "ggml-cpu-traits.h"
 #include "ggml-dsp/MTUtils.hpp"
 #include "ggml-impl.h"
-#include "ggml-dsp-funcs.h"
+#include "dsp_utils.h"
 #include "ggml.h"
 
 #include <cassert>
@@ -15,10 +15,13 @@
 #include <sys/mman.h>
 #include <vector>
 #include <map>
+#include <functional>
+#include <thread>
 #include <sys/mman.h>
 
 #include "backend_debug.h"
 #include "dsp_multicluster_buffer.h"
+#include "dsp_tensor_utils.h"
 
 #if NO_INIT_DEV
 #define mt_flush_all()
@@ -293,9 +296,86 @@ static void ggml_backend_dspp_buffer_set_tensor(ggml_backend_buffer_t buffer, st
         ((uint8_t*)(tensor->data) + offset < ((uint8_t*)buffer_base) + buffer_size) &&
         ((uint8_t*)(tensor->data) + offset + size <= ((uint8_t*)buffer_base) + buffer_size)
     );
-    // --- do the memcpy
-    memcpy((char *)tensor->data + offset, data, size);
+    
+    if(is_weight_tensor(tensor)) {
+        // for weight let's transpose it here
+        assert(tensor->type == GGML_TYPE_F16);
+        assert(ggml_is_contiguous(tensor));
+        // size_t nr_row = tensor->ne[1];
+        // size_t nr_col = tensor->ne[0];
+        // typedef __fp16(*mat2d_t)[nr_row][nr_col];
+        // typedef __fp16(*mat2d_tp_t)[nr_col][nr_row];
+        // size_t nb = tensor->ne[2];
+        // size_t nr = tensor->ne[1];
+        // size_t nc = tensor->ne[0];
+        // mat2d_t mat_ptr = (mat2d_t)data;
+        // mat2d_tp_t mat_tp_ptr = (mat2d_tp_t)(tensor->data);
+        // for(size_t cb = 0; cb < nb; cb++) {
+        //     for(size_t cr = 0; cr < nr; cr++) {
+        //         for(size_t cc = 0; cc < nc; cc++) {
+        //             (*mat_tp_ptr)[cc][cr] = (*mat_ptr)[cr][cc];
+        //         }
+        //     }
+        // }
+        // printf("%s: Loading and transposing tensor %s \n", __func__, tensor->name);
+        auto tp_co = [=](){
+            const size_t nr_row = tensor->ne[1];
+            const size_t nr_col = tensor->ne[0];
+            
+            size_t nb = tensor->ne[2];
+            size_t nr = tensor->ne[1];
+            size_t nc = tensor->ne[0];
+            
 
+            size_t nr_threads = 16;
+
+            std::vector<std::thread> threads_arr;
+            for(size_t thread_id = 0; thread_id < nr_threads; thread_id++) {
+                threads_arr.push_back(std::thread([=](size_t thread_id, size_t nr_threads) {
+                    typedef __fp16(*mat2d_t)[nr_row][nr_col];
+                    typedef __fp16(*mat2d_tp_t)[nr_col][nr_row];
+                    mat2d_t mat_ptr = (mat2d_t)data;
+                    mat2d_tp_t mat_tp_ptr = (mat2d_tp_t)(tensor->data);
+
+                    size_t nr_per_thread = (nr + nr_threads - 1) / nr_threads;
+                    size_t r_begin = nr_per_thread * thread_id;
+                    if(r_begin >= nr) { return; }
+                    size_t r_size = std::min(nr_per_thread, nr - r_begin);
+                    for(size_t cb = 0; cb < nb; cb++) {
+                        for(size_t cr = r_begin; cr < r_begin + r_size; cr++) {
+                            for(size_t cc = 0; cc < nc; cc++) {
+                                (*mat_tp_ptr)[cc][cr] = (*mat_ptr)[cr][cc];
+                            }
+                        }
+                    }
+                }, thread_id, nr_threads));
+            }
+            printf("%s: Loading and transposing tensor %s \n", __func__, tensor->name);
+            for(auto & t : threads_arr) {
+                t.join();
+            }
+            // for(size_t cb = 0; cb < nb; cb++) {
+            //     for(size_t cr = 0; cr < nr; cr++) {
+            //         for(size_t cc = 0; cc < nc; cc++) {
+            //             (*mat_tp_ptr)[cc][cr] = (*mat_ptr)[cr][cc];
+            //         }
+            //     }
+            // }
+            
+            mt_flush_all();
+        };
+        transaction_t dsp_async_exc(std::function<void()> func);
+        transaction_t transc = dsp_async_exc(tp_co);
+        dsp_transc_wait(transc);
+        // dsp_transc_wait_all();
+        // tp_co();
+    }
+    else {
+        // for non-weight tensor do the naive memcpy
+        memcpy((char *)tensor->data + offset, data, size);
+        mt_flush_all();
+    }
+    
     // ----- multi-cluster approach
     // --- find multi cluster data desc struct
     // auto it = data2desc_map.find(tensor->buffer->context);
@@ -308,7 +388,7 @@ static void ggml_backend_dspp_buffer_set_tensor(ggml_backend_buffer_t buffer, st
     // assert(offset == 0); // for debug
     // memcpy((char *)tensor->data + offset, data, size);
 
-    mt_flush_all();
+    
 
     // desc->data_ready = true;
 
@@ -351,9 +431,6 @@ static const struct ggml_backend_buffer_i ggml_backend_dspp_buffer_i = {
     /* .reset           = */ NULL,
 };
 
-
-
-int get_cluster_id_from_buffer(void * ptr);
 static enum ggml_status ggml_backend_dsp_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
     // do nothing, make sure tensor->data inside dsp buffer
     assert(is_dsp_buffer(buffer));
@@ -425,7 +502,7 @@ static const char * ggml_backend_dspp_buffer_type_get_name(ggml_backend_buffer_t
 static ggml_backend_buffer_t ggml_backend_dspp_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     // ----- for mono-cluster, use dsp_malloc and set as buffer context
     void * data = NULL;
-    data = dsp_malloc(size);
+    data = dsp_malloc_on_cluster(size, dsp_get_main_cluster());
     if (data == NULL) {
         GGML_LOG_ERROR("%s: failed to allocate buffer of size %zu\n", __func__, size);
         return NULL;
@@ -459,7 +536,8 @@ static ggml_backend_buffer_t ggml_backend_dspp_buffer_type_alloc_buffer(ggml_bac
 }
 
 static size_t ggml_backend_dspp_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
-    return TENSOR_ALIGNMENT;
+    // return TENSOR_ALIGNMENT;
+    return PAGE_SIZE;
 
     GGML_UNUSED(buft);
 }

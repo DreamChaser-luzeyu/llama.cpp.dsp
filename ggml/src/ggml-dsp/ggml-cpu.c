@@ -11,7 +11,7 @@
 #include "ggml-threading.h"
 #include "ggml.h"
 
-#include "ggml-dsp-funcs.h"
+#include "dsp_utils.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
@@ -4254,7 +4254,7 @@ static void ggml_compute_forward_dup_q(
     }
 }
 
-static void ggml_compute_forward_dup(
+void ggml_compute_forward_dup(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
 
@@ -7637,7 +7637,7 @@ static void ggml_compute_forward_gelu_quick(
 
 // ggml_compute_forward_silu
 
-static void ggml_compute_forward_silu_f32(
+void ggml_compute_forward_silu_f32(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
 
@@ -7676,7 +7676,7 @@ static void ggml_compute_forward_silu_f32(
     }
 }
 
-static void ggml_compute_forward_silu_f16(
+void ggml_compute_forward_silu_f16(
     const struct ggml_compute_params * params,
     struct ggml_tensor * dst) {
 
@@ -8258,7 +8258,7 @@ static void ggml_compute_forward_rms_norm_f32(
 
                 const float scale = 1.0f/sqrtf(mean + eps);
 
-                ggml_vec_scale_f32(ne00, y, scale);
+                // ggml_vec_scale_f32(ne00, y, scale);
             }
         }
     }
@@ -10941,6 +10941,7 @@ static void ggml_compute_forward_rope_f16(
     for (int64_t i3 = 0; i3 < ne3; i3++) {
         for (int64_t i2 = 0; i2 < ne2; i2++) {
 
+            // --- 计算sin theta & cos theta
             float * cache = (float *) params->wdata + (ne0 + CACHE_LINE_SIZE_F32)*ith;
             if (!is_mrope) {
                 const int64_t p = pos[i2];
@@ -10959,7 +10960,7 @@ static void ggml_compute_forward_rope_f16(
             for (int64_t i1 = 0; i1 < ne1; i1++) {
                 if (ir++ < ir0) continue;
                 if (ir   > ir1) break;
-
+                // --- 应该不是我们用到的
                 if (is_neox || is_mrope) {
                     if (is_vision) {
                         for (int64_t i0 = 0; i0 < n_dims; i0 += 2) {
@@ -11010,10 +11011,11 @@ static void ggml_compute_forward_rope_f16(
                     }
                 }
 
+                // --- 关注这一部分
                 if (is_vision) {
                     for (int64_t i0 = n_dims; i0 < ne0; i0 += 2) {
                         const int64_t ic = i0/2;
-
+                        // - 取出当前“组”的sin和cos数值
                         const float cos_theta = cache[i0 + 0];
                         const float sin_theta = cache[i0 + 1];
 
@@ -13129,7 +13131,11 @@ static void ggml_compute_forward_unary(
             } break;
         case GGML_UNARY_OP_SILU:
             {
-                ggml_compute_forward_silu(params, dst);
+                // ggml_compute_forward_silu(params, dst);
+                void ggml_compute_forward_silu_dsp(
+                    const struct ggml_compute_params * params,
+                    struct ggml_tensor * dst);
+                ggml_compute_forward_silu_dsp(params, dst);
             } break;
         case GGML_UNARY_OP_HARDSWISH:
             {
@@ -14407,7 +14413,12 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_RMS_NORM:
             {
-                ggml_compute_forward_rms_norm(params, tensor);
+                // ggml_compute_forward_rms_norm(params, tensor);
+                void ggml_compute_forward_rms_norm_dsp(
+                    const struct ggml_compute_params * params,
+                    struct ggml_tensor * dst
+                );
+                ggml_compute_forward_rms_norm_dsp(params, tensor);
             } break;
         case GGML_OP_RMS_NORM_BACK:
             {
@@ -14492,7 +14503,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_SOFT_MAX:
             {
-                ggml_compute_forward_soft_max(params, tensor);
+                // ggml_compute_forward_soft_max(params, tensor);
+                void ggml_compute_forward_soft_max_dsp(
+                    const struct ggml_compute_params * params,
+                          struct ggml_tensor * dst);
+                ggml_compute_forward_soft_max_dsp(params, tensor);
             } break;
         case GGML_OP_SOFT_MAX_BACK:
             {
@@ -14500,7 +14515,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_ROPE:
             {
-                ggml_compute_forward_rope(params, tensor);
+                // ggml_compute_forward_rope(params, tensor);
+                void ggml_compute_forward_rope_dsp(
+                    const struct ggml_compute_params * params,
+                    struct ggml_tensor * dst);
+                ggml_compute_forward_rope_dsp(params, tensor);
             } break;
         case GGML_OP_ROPE_BACK:
             {
